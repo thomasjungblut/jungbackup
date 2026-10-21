@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Thomas Jungblut -->
+<component type="desktop-application">
+  <id>io.jungblut.JungBackup</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+
+  <name>Jung Backup</name>
+  <summary>Back up your files and see how your backups are doing</summary>
+
+  <developer id="io.jungblut">
+    <name>Thomas Jungblut</name>
+  </developer>
+
+  <description>
+    <p>
+      Jung Backup keeps copies of your files on another drive or a network share,
+      and opens to a dashboard that tells you at a glance whether your backups are healthy.
+    </p>
+    <ul>
+      <li>See how big your backup is, how old it is and how long the last run took</li>
+      <li>Find out how many files were new, changed or unchanged in each backup</li>
+      <li>Watch a running backup: progress, time remaining, read and write speed, CPU and memory use</li>
+      <li>Follow the history of every backup in charts and a snapshot list</li>
+      <li>Back up automatically on a schedule and remove old backups after a set time</li>
+      <li>Encrypt and deduplicate backups with restic</li>
+    </ul>
+    <p>
+      Already using Déjà Dup? Import its settings on first start. Jung Backup uses the same
+      backup format, so both apps can restore from and clean up the same backup.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.jungblut.JungBackup.desktop</launchable>
+  <provides>
+    <binary>jungbackup</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/thomasjungblut/jungbackup</url>
+  <url type="bugtracker">https://github.com/thomasjungblut/jungbackup/issues</url>
+  <url type="vcs-browser">https://github.com/thomasjungblut/jungbackup</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#99c1f1</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The dashboard shows the health and history of your backups</caption>
+      <image>https://raw.githubusercontent.com/thomasjungblut/jungbackup/v0.1.0/data/screenshots/dashboard.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Live progress, throughput and resource use while backing up</caption>
+      <image>https://raw.githubusercontent.com/thomasjungblut/jungbackup/v0.1.0/data/screenshots/backing-up.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Get started by importing your Déjà Dup settings</caption>
+      <image>https://raw.githubusercontent.com/thomasjungblut/jungbackup/v0.1.0/data/screenshots/welcome.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-21">
+      <description>
+        <p>First release.</p>
+        <ul>
+          <li>Backup dashboard with size, age, duration, file and history statistics</li>
+          <li>Live progress with throughput, CPU and memory use</li>
+          <li>Scheduled backups with automatic cleanup of old backups</li>
+          <li>Import from Déjà Dup</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

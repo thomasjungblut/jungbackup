@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+
+# pycharm
+.idea
+
 # C extensions
 *.so
 
@@ -218,3 +222,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.flatpak-builder/
+/build-dir/
+/repo/
+/jungbackup.flatpak

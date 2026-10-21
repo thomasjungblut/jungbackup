@@ -1,0 +1,50 @@
+id: io.jungblut.JungBackup
+runtime: org.gnome.Platform
+runtime-version: "51"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.golang
+command: jungbackup
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # A backup app has to read whatever the user chooses to back up and write to
+  # any mounted drive or network share (NFS/SMB mounts under /mnt, /media, ...).
+  - --filesystem=host
+  # GVfs mounts (smb://, sftp:// opened in Files) appear here as FUSE paths.
+  - --filesystem=xdg-run/gvfs
+  # Import from Déjà Dup and switch off its schedule so both apps don't back up
+  # twice. Flatpak hides ~/.var/app even with --filesystem=host.
+  - --filesystem=~/.var/app/org.gnome.DejaDup/config/glib-2.0/settings
+
+build-options:
+  append-path: /usr/lib/sdk/golang/bin
+  env:
+    GOBIN: /app/bin
+    GOEXPERIMENT: nodwarf5
+
+cleanup:
+  - /lib/pkgconfig
+  - /share/man
+
+modules:
+  # Same restic version and vendored Go modules as Déjà Dup's Flathub build.
+  - name: restic
+    buildsystem: simple
+    build-commands:
+      - go install -mod=vendor -trimpath ./cmd/restic
+    sources:
+      - type: git
+        url: https://github.com/restic/restic
+        tag: v0.19.1
+        commit: 6aa3a516ce654808a1f28f9fa21e9b7c8e6e90bf
+      - restic.go.mod.yml
+
+  - name: jungbackup
+    buildsystem: meson
+    sources:
+      - type: dir
+        path: ../..

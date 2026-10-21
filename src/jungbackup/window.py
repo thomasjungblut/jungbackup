@@ -156,7 +156,7 @@ class Window(Adw.ApplicationWindow):
         return header
 
     def _build_welcome(self):
-        page = Adw.StatusPage(icon_name="drive-harddisk-symbolic", title="Back Up Your Files",
+        page = Adw.StatusPage(icon_name="io.jungblut.JungBackup", title="Back Up Your Files",
                               description="Keep copies of your files safe on another drive or a network share, "
                                           "and see at a glance how your backups are doing.")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER)
@@ -334,13 +334,14 @@ class Window(Adw.ApplicationWindow):
             if result is not None:
                 s = result.settings
                 where = s.repository or "a location this app can't use yet"
-                self.import_hint.set_label(f"Found Déjà Dup backups in {where}")
+                self.import_hint.set_label(f"Found Déjà Dup backups in {describe_path(where)}")
             self.stack.set_visible_child_name("welcome")
             self.refresh_btn.set_visible(False)
             self.edit_btn.set_visible(False)
             self.banner.set_revealed(False)
             return
         self.stack.set_visible_child_name("dashboard")
+        self._sync_autostart()
         self.refresh_btn.set_visible(True)
         self.edit_btn.set_visible(True)
         self._render_all()
@@ -413,9 +414,20 @@ class Window(Adw.ApplicationWindow):
     def edit_settings(self):
         if not self.settings.configured:
             return
-        PreferencesDialog(self.settings, self.dd, on_changed=self._render_all,
+        PreferencesDialog(self.settings, self.dd, on_changed=self._on_settings_changed,
                           on_change_location=lambda: self.start_setup("Change Location"),
                           on_forget_password=self._forget_password).present(self)
+
+    def _on_settings_changed(self):
+        self._sync_autostart()
+        self._render_all()
+
+    def _sync_autostart(self):
+        wanted = self.settings.configured and self.settings.periodic
+        if wanted != getattr(self, "_autostart", None):
+            self._autostart = wanted
+            from .app import request_autostart
+            request_autostart(self if self.get_visible() else None, wanted)
 
     def _forget_password(self):
         keyring.forget(self.settings.repository)
@@ -715,7 +727,7 @@ class Window(Adw.ApplicationWindow):
             title = {"creating": "Creating Backup…", "backing-up": "Backing Up…",
                      "cleaning-up": "Removing Old Backups…"}.get(job.phase, "Preparing…")
             started = job.started
-            sub = f"Saving to {self.settings.repository}"
+            sub = f"Saving to {describe_path(self.settings.repository)}"
         else:
             who = "Déjà Dup" if act.engine in ("restic", "duplicity") else act.engine
             title = f"{who} is running {act.operation}"
@@ -738,7 +750,7 @@ class Window(Adw.ApplicationWindow):
             remaining = status.get("seconds_remaining")
             self.m_eta.set(fmt_duration(remaining) if remaining else "estimating…")
             current = status.get("current_files") or []
-            self.live_files.set_label("\n".join(current[:2]))
+            self.live_files.set_label("\n".join(describe_path(f) for f in current[:2]))
         else:
             # No progress feed: estimate from how long the previous backup took.
             latest = self._latest()
@@ -751,7 +763,7 @@ class Window(Adw.ApplicationWindow):
                 self.live_progress.pulse()
                 self.live_progress_text.set_label("")
                 self.m_eta.set("—")
-            self.live_files.set_label(act.current_file if act and act.current_file else "")
+            self.live_files.set_label(describe_path(act.current_file) if act and act.current_file else "")
 
         if act is not None:
             self.m_read.set(fmt_rate(act.read_rate))

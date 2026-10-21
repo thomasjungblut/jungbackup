@@ -37,6 +37,11 @@ class Application(Adw.Application):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
         css.load_from_path(os.path.join(os.path.dirname(__file__), "style.css"))
+        # Running from a source checkout: pick up the app icon from data/.
+        icons = os.path.join(os.path.dirname(__file__), "..", "..", "data", "icons")
+        if os.path.isdir(icons):
+            Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(os.path.abspath(icons))
+        Gtk.Window.set_default_icon_name(APP_ID)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
@@ -52,10 +57,33 @@ class Application(Adw.Application):
         win.present()
 
     def _about(self, *_):
-        Adw.AboutDialog(application_name="Jung Backup", application_icon="drive-harddisk-symbolic",
+        Adw.AboutDialog(application_name="Jung Backup", application_icon=APP_ID,
                         version=VERSION, developer_name="Thomas Jungblut",
                         comments="A backup dashboard compatible with Déjà Dup",
-                        license_type=Gtk.License.GPL_3_0).present(self.get_active_window())
+                        license_type=Gtk.License.APACHE_2_0, website="https://github.com/thomasjungblut/jungbackup").present(self.get_active_window())
+
+
+def request_autostart(window, enabled):
+    """Ask the Background portal to start us at login (Flatpak only)."""
+    if not os.path.exists("/.flatpak-info"):
+        return
+    try:
+        gi.require_version("Xdp", "1.0")
+        gi.require_version("XdpGtk4", "1.0")
+        from gi.repository import Xdp, XdpGtk4
+    except (ImportError, ValueError):
+        return
+    portal = Xdp.Portal.new()
+    parent = XdpGtk4.parent_new_gtk(window) if window is not None else None
+    flags = Xdp.BackgroundFlags.AUTOSTART if enabled else Xdp.BackgroundFlags.NONE
+
+    def done(portal, result):
+        try:
+            portal.request_background_finish(result)
+        except Exception:  # denied by the user, or no portal available
+            pass
+
+    portal.request_background(parent, "Run scheduled backups", ["jungbackup", "--background"], flags, None, done)
 
 
 def main():

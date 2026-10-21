@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Jung Backup
+Comment=Back up your files and see how your backups are doing
+Exec=jungbackup
+Icon=io.jungblut.JungBackup
+Terminal=false
+Type=Application
+Categories=GTK;GNOME;Utility;Archiving;
+Keywords=backup;restore;restic;deja;dup;snapshot;dashboard;
+StartupNotify=true

@@ -3,7 +3,7 @@ name = "jungbackup"
 version = "0.1.0"
 description = "A backup dashboard for GNOME, compatible with Déjà Dup's restic backups"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 authors = [{ name = "Thomas Jungblut", email = "thomas@jungblut.io" }]
 requires-python = ">=3.11"
 # PyGObject, GTK 4, libadwaita and libsecret come from the system (or the GNOME
@@ -31,3 +31,7 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E402"]
+
+[tool.uv]
+# GTK/libadwaita bindings come from the system Python; never use a uv-managed one.
+python-preference = "only-system"

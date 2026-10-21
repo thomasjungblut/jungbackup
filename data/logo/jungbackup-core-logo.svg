@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg id="jungbackup-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" class="w-full h-full drop-shadow-2xl">
+        <defs>
+          <!-- Linear Gradients -->
+          <linearGradient id="gradientJ" x1="0%" y1="100%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#0284c7"/>
+            <stop offset="50%" stop-color="#06b6d4"/>
+            <stop offset="100%" stop-color="#10b981"/>
+          </linearGradient>
+
+          <linearGradient id="gradientB" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#38bdf8"/>
+            <stop offset="50%" stop-color="#0f766e"/>
+            <stop offset="100%" stop-color="#0369a1"/>
+          </linearGradient>
+
+          <linearGradient id="gradientArrowUp" x1="0%" y1="100%" x2="0%" y2="0%">
+            <stop offset="0%" stop-color="#10b981"/>
+            <stop offset="100%" stop-color="#34d399"/>
+          </linearGradient>
+
+          <linearGradient id="gradientArrowDown" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0284c7"/>
+            <stop offset="100%" stop-color="#0f766e"/>
+          </linearGradient>
+
+          <!-- Glow Effect Filter -->
+          <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="8" result="blur"/>
+            <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+          </filter>
+
+          <!-- Drop Shadow Filter -->
+          <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+            <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.5"/>
+          </filter>
+        </defs>
+
+        <g filter="url(#shadow)">
+          <!-- Main 'J' Structure with Flowing Up Arrow -->
+          <path d="M 170 120 &#10;                   V 310 &#10;                   A 65 65 0 0 1 105 375 &#10;                   A 65 65 0 0 1 40 310 &#10;                   A 20 20 0 0 1 80 310 &#10;                   A 25 25 0 0 0 105 335 &#10;                   A 25 25 0 0 0 130 310 &#10;                   V 180" fill="none" stroke="url(#gradientJ)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Upward Arrowhead on 'J' -->
+          <path d="M 130 180 &#10;                   L 170 120 &#10;                   L 210 180" fill="none" stroke="url(#gradientArrowUp)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Main 'B' Structure with Flowing Down/Curved Arrow -->
+          <!-- Upper Loop of B -->
+          <path d="M 230 140 &#10;                   H 330 &#10;                   A 60 60 0 0 1 390 200 &#10;                   A 60 60 0 0 1 330 260 &#10;                   H 230" fill="none" stroke="url(#gradientB)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Lower Loop of B extending into Downward Arrow -->
+          <path d="M 230 260 &#10;                   H 340 &#10;                   A 65 65 0 0 1 405 325 &#10;                   A 65 65 0 0 1 340 390 &#10;                   H 230&#10;                   L 270 350" fill="none" stroke="url(#gradientB)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Lower Downward/Return Arrowhead on 'B' Base -->
+          <path d="M 270 430 &#10;                   L 230 390 &#10;                   L 270 350" fill="none" stroke="url(#gradientArrowDown)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Subtle Energy Accent Nodes / Connections -->
+          <circle cx="170" cy="120" r="10" fill="#34d399" filter="url(#glow)"/>
+          <circle cx="230" cy="390" r="10" fill="#38bdf8" filter="url(#glow)"/>
+        </g>
+      </svg>

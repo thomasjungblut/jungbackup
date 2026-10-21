@@ -26,11 +26,12 @@ Fedora: `python3-gobject gtk4 libadwaita libsecret`), so the venv needs
 system site-packages:
 
 ```sh
-uv venv --python /usr/bin/python3 --system-site-packages
-uv sync
-uv run jungbackup
-uv run ruff check src
+make setup    # uv venv --python /usr/bin/python3 --system-site-packages && uv sync
+make run      # uv run jungbackup
+make check    # ruff + desktop file and metainfo validation
 ```
+
+`make help` lists all targets.
 
 restic is looked up in this order: `$JUNGBACKUP_RESTIC`, `restic` on `PATH`, then the
 copy bundled inside the Déjà Dup Flatpak.
@@ -51,14 +52,23 @@ Settings: `~/.config/jungbackup/settings.json`. Stats cache:
 | `dialogs.py`, `prefs.py` | Setup flow, password prompt, settings dialog |
 | `charts.py` | Cairo bar charts, sparklines, stacked bar |
 
-## Road to Flathub
+## Flatpak
 
-- [ ] Flatpak manifest bundling restic (and later rclone), `--filesystem=host`
-      or portal-based folder access, `--talk-name=org.freedesktop.secrets`
-- [ ] Background portal: autostart with `--background` so scheduled backups run
-      without the window open (the flag already exists)
-- [ ] App ID, icon, `.desktop` and AppStream metainfo with screenshots
-- [x] Name: Jung Backup (`io.jungblut.JungBackup`)
-- [ ] Restore UI (browse snapshots, restore files)
-- [ ] Remote backends (SFTP, rclone: Google Drive, OneDrive)
-- [ ] Translations (gettext)
+The manifest in `build-aux/flatpak/` builds restic from source, using the same
+pinned version and vendored Go modules as Déjà Dup's Flathub build
+(`restic.go.mod.yml` and `restic.modules.txt`, CC0, copied from
+[flathub/org.gnome.DejaDup](https://github.com/flathub/org.gnome.DejaDup)).
+
+```sh
+make flatpak-deps     # once: flatpak-builder + GNOME SDK as user installs
+make flatpak          # build and install for your user
+make flatpak-run      # run the installed build
+make flatpak-bundle   # single-file jungbackup.flatpak to share
+make flatpak-lint     # Flathub's linter, same checks as its CI
+make flatpak-uninstall
+```
+
+Inside the sandbox the live view only sees restic processes this app
+started. Déjà Dup runs in its own sandbox, so its backups show up after they
+finish, not while they run.
+
