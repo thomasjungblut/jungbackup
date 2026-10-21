@@ -1,0 +1,29 @@
+.hero {
+  padding: 20px 24px;
+}
+
+.hero-icon.good { color: var(--success-color); }
+.hero-icon.warning { color: var(--warning-color); }
+.hero-icon.error { color: var(--error-color); }
+.hero-icon.accent { color: var(--accent-color); }
+
+.live,
+.chart-card {
+  padding: 16px 18px;
+}
+
+.stat-tile {
+  padding: 14px 16px;
+}
+
+.stat-value {
+  font-size: 1.55em;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.metric-value {
+  font-size: 1.15em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}

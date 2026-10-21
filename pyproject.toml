@@ -1,0 +1,33 @@
+[project]
+name = "jungbackup"
+version = "0.1.0"
+description = "A backup dashboard for GNOME, compatible with Déjà Dup's restic backups"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Thomas Jungblut", email = "thomas@jungblut.io" }]
+requires-python = ">=3.11"
+# PyGObject, GTK 4, libadwaita and libsecret come from the system (or the GNOME
+# Flatpak runtime). Building PyGObject from PyPI needs C headers, so the dev venv
+# uses --system-site-packages instead of listing it here. See README.md.
+dependencies = []
+
+[project.scripts]
+jungbackup = "jungbackup.app:main"
+
+[dependency-groups]
+dev = ["ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jungbackup"]
+
+[tool.ruff]
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E402"]
