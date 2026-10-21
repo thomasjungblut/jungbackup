@@ -141,6 +141,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Re-Import from Déjà Dup…", "win.reimport")
         menu.append("Open Déjà Dup", "win.open-deja-dup")
         menu.append("About Jung Backup", "app.about")
+        menu.append("Quit", "app.quit")
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Main Menu")
         header.pack_end(menu_btn)
 
@@ -612,7 +613,7 @@ class Window(Adw.ApplicationWindow):
         return GLib.SOURCE_CONTINUE
 
     def _on_close(self, _win):
-        if self.job is not None or self.settings.periodic:
+        if self.job is not None or (self.settings.configured and self.settings.periodic):
             # Keep running in the background for the schedule / the running job.
             self.set_visible(False)
             app = self.get_application()
