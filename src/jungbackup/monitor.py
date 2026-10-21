@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+NUM_CPUS = os.cpu_count() or 1
 ENGINES = {"restic", "duplicity", "rclone"}
 RESTIC_COMMANDS = {"backup", "restore", "forget", "prune", "check", "snapshots", "stats", "ls",
                    "find", "dump", "init", "unlock", "rebuild-index", "repair", "copy", "mount", "diff"}
@@ -36,7 +37,8 @@ class Activity:
     operation: str
     engine: str
     started: float           # unix time the oldest process started
-    cpu_percent: float
+    cpu_percent: float       # share of all cores, 0-100
+    load: tuple              # system load average over 1, 5 and 15 minutes
     rss: int
     read_rate: float
     write_rate: float
@@ -219,7 +221,8 @@ class ProcessMonitor:
             operation=self._operation(main, engines[main]),
             engine=engines[main],
             started=self._boot + table[main].start_ticks / CLK_TCK,
-            cpu_percent=cpu_rate * 100,
+            cpu_percent=cpu_rate / NUM_CPUS * 100,
+            load=os.getloadavg(),
             rss=rss,
             read_rate=read_rate,
             write_rate=write_rate,

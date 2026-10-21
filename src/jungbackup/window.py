@@ -12,7 +12,7 @@ from .charts import BarChart, BreakdownBar, Sparkline, Swatch
 from .dejadup import DejaDupConfig, describe_path
 from .dialogs import PasswordDialog, SetupDialog
 from .engine import BackupJob
-from .monitor import ProcessMonitor
+from .monitor import NUM_CPUS, ProcessMonitor
 from .prefs import PreferencesDialog, open_deja_dup
 from .restic import Restic, is_repository
 from .settings import Settings, import_from_deja_dup
@@ -84,9 +84,13 @@ class Metric(Gtk.Box):
         if sparkline_series is not None:
             self.spark = Sparkline(series=sparkline_series)
             self.append(self.spark)
+        self._detail = _label("", ("caption", "dim-label", "numeric"), visible=False)
+        self.append(self._detail)
 
-    def set(self, text):
+    def set(self, text, detail=""):
         self._value.set_label(text)
+        self._detail.set_label(detail)
+        self._detail.set_visible(bool(detail))
 
 
 class Window(Adw.ApplicationWindow):
@@ -780,7 +784,9 @@ class Window(Adw.ApplicationWindow):
             self.m_write.set(fmt_rate(act.write_rate))
             self.m_read.spark.set_values(act.read_history)
             self.m_write.spark.set_values(act.write_history)
-            self.m_cpu.set(f"{act.cpu_percent:.0f}%")
+            self.m_cpu.set(f"{act.cpu_percent:.0f}%", "Load " + " · ".join(f"{l:.2f}" for l in act.load))
+            self.m_cpu.set_tooltip_text(f"Share of all {NUM_CPUS} cores used by the backup.\n"
+                                        "System load average over 1, 5 and 15 minutes.")
             self.m_mem.set(fmt_bytes(act.rss))
             self.m_read.set_tooltip_text(f"{fmt_bytes(act.read_total)} read in total")
             self.m_write.set_tooltip_text(f"{fmt_bytes(act.write_total)} written in total")
