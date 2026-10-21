@@ -63,6 +63,16 @@ def include_exclude_args(includes, excludes):
     return targets, [f"--exclude={pattern}" for _depth, _kind, pattern in rules]
 
 
+def tuning_args(settings):
+    """Global flags for commands that write packs (backup, prune)."""
+    args = []
+    if settings.pack_size_mb > 0:
+        args.append(f"--pack-size={settings.pack_size_mb}")
+    if settings.compression and settings.compression != "auto":
+        args.append(f"--compression={settings.compression}")
+    return args
+
+
 def _signal_restic_descendants(root_pid, sig):
     """SIGINT the real restic process, which may sit behind `flatpak run`/`nice`."""
     parents = {}
@@ -150,8 +160,11 @@ class BackupJob:
             self._finish(False, "None of the folders to back up exist.")
             return
         host = GLib.get_host_name()
-        args = ["backup", f"--host={host}", "--tag=deja-dup", "--group-by=host,tags",
-                "--exclude-caches", "--exclude-if-present=.deja-dup-ignore", *exclude_args, *includes]
+        args = ["backup", *tuning_args(self._settings), f"--host={host}", "--tag=deja-dup",
+                "--group-by=host,tags", "--exclude-caches", "--exclude-if-present=.deja-dup-ignore"]
+        if self._settings.read_concurrency > 0:
+            args.append(f"--read-concurrency={self._settings.read_concurrency}")
+        args += [*exclude_args, *includes]
         self._set_phase("backing-up")
         try:
             self._job = self._restic.stream(self._settings.repository, self._password, args,
@@ -192,7 +205,7 @@ class BackupJob:
 
     def _forget(self):
         host = GLib.get_host_name()
-        args = ["forget", f"--host={host}", "--tag=deja-dup", "--group-by=host,tags", "--prune",
+        args = ["forget", *tuning_args(self._settings), f"--host={host}", "--tag=deja-dup", "--group-by=host,tags", "--prune",
                 f"--keep-within={self._settings.keep_days}d"]
         self._set_phase("cleaning-up")
         try:

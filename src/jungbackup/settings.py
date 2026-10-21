@@ -25,6 +25,9 @@ class Settings:
     periodic: bool = True
     period_days: int = 1
     keep_days: int = 0                          # 0 = keep forever
+    pack_size_mb: int = 0                       # restic --pack-size; 0 = restic's default (16 MiB)
+    compression: str = "auto"                   # restic --compression: auto, off, fastest, better, max
+    read_concurrency: int = 0                   # restic backup --read-concurrency; 0 = default (2)
     last_backup: str = ""                       # ISO 8601, last successful backup
     last_attempt: str = ""
     last_error: str = ""

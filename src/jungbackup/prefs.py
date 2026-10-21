@@ -9,6 +9,9 @@ from .util import fmt_days
 
 PERIODS = [1, 2, 3, 7, 14, 30]
 KEEP = [30, 90, 182, 365, 730, 0]
+PACK_SIZES = [0, 32, 64, 128]          # restic refuses packs above 128 MiB
+COMPRESSION = {"auto": "Automatic", "off": "Off", "fastest": "Fastest", "better": "Better", "max": "Maximum"}
+READ_CONCURRENCY = [0, 4, 8]
 
 
 def _choices(values, current, label):
@@ -73,6 +76,35 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # Folders ----------------------------------------------------------
         self._folder_group(page, "Folders to Back Up", "includes")
         self._folder_group(page, "Folders to Ignore", "excludes")
+
+        # Performance ------------------------------------------------------
+        perf = Adw.PreferencesGroup(title="Performance",
+                                    description="Advanced restic options. They take effect on the next backup.")
+        page.add(perf)
+
+        sizes, model = _choices(PACK_SIZES, settings.pack_size_mb,
+                                lambda v: "Default (16 MiB)" if v == 0 else f"{v} MiB")
+        pack = Adw.ComboRow(title="Pack Size", model=model, selected=sizes.index(settings.pack_size_mb),
+                            subtitle="Larger packs mean fewer files, which helps on slow or network storage")
+        pack.connect("notify::selected", lambda row, _p: self._set("pack_size_mb", sizes[row.get_selected()]))
+        perf.add(pack)
+
+        modes = list(COMPRESSION)
+        if settings.compression not in modes:
+            modes.append(settings.compression)
+        comp = Adw.ComboRow(title="Compression", selected=modes.index(settings.compression),
+                            model=Gtk.StringList.new([COMPRESSION.get(m, m) for m in modes]),
+                            subtitle="Needs a restic repository in format version 2")
+        comp.connect("notify::selected", lambda row, _p: self._set("compression", modes[row.get_selected()]))
+        perf.add(comp)
+
+        reads, model = _choices(READ_CONCURRENCY, settings.read_concurrency,
+                                lambda v: "Default (2)" if v == 0 else str(v))
+        conc = Adw.ComboRow(title="Files Read in Parallel", model=model,
+                            selected=reads.index(settings.read_concurrency),
+                            subtitle="More can be faster on SSDs, slower on spinning disks")
+        conc.connect("notify::selected", lambda row, _p: self._set("read_concurrency", reads[row.get_selected()]))
+        perf.add(conc)
 
         # Password ---------------------------------------------------------
         if settings.encrypted:
