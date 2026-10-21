@@ -69,6 +69,12 @@ flatpak-lint: ## Run Flathub's linter (host filesystem access needs a Flathub ex
 	$(LINT) manifest $(MANIFEST) || true
 	$(LINT) repo repo || true
 
+.PHONY: flatpak-reinstall
+flatpak-reinstall: ## Kill the running app, uninstall it and build + install fresh
+	flatpak kill $(APP_ID) 2>/dev/null || true
+	$(MAKE) flatpak-uninstall
+	$(MAKE) flatpak
+
 .PHONY: flatpak-uninstall
 flatpak-uninstall: ## Remove the locally installed Flatpak
 	flatpak uninstall --user -y $(APP_ID) $(APP_ID).Debug || true
