@@ -1,7 +1,7 @@
-"""Back up with restic, the same way Déjà Dup does.
+"""Back up with restic.
 
-Snapshots are tagged and grouped exactly like Déjà Dup's, so either app can
-restore and prune backups made by the other.
+For compatibility, snapshots use the same tag, host and grouping flags as
+Déjà Dup, so either app can restore and prune backups made by the other.
 """
 
 import os
@@ -13,40 +13,54 @@ from gi.repository import GLib
 from .dejadup import expand_path
 from .restic import EXIT_INCOMPLETE, EXIT_LOCKED, is_empty_or_missing, is_repository
 
+EXCLUDE, INCLUDE = 0, 1
 
-def _escape_pattern(path):
+
+def _literal(path):
+    """Quote a path so restic matches it literally.
+
+    Patterns use Go's filepath.Match syntax, where \\ * ? [ are special, and
+    restic expands environment variables, so a literal $ is written as $$.
+    """
+    for special in ("\\", "*", "?", "["):
+        path = path.replace(special, "\\" + special)
     return path.replace("$", "$$")
 
 
-def _escape_path(path):
-    escaped = path.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?").replace("[", "\\[")
-    return _escape_pattern(escaped)
-
-
-def _prefix_key(pattern):
-    """Sort parents before children, ignoring '!' and treating '/*' as '/'."""
-    if pattern.startswith("!"):
-        pattern = pattern[1:]
-    if pattern.endswith("/*"):
-        pattern = pattern[:-1]
-    return pattern
+def _absolute_paths(entries):
+    """Expand $HOME-style entries to unique, symlink-free absolute paths."""
+    paths = []
+    for entry in entries:
+        path = expand_path(entry)
+        if path and os.path.isabs(path):
+            path = os.path.realpath(path)
+            if path not in paths:
+                paths.append(path)
+    return paths
 
 
 def include_exclude_args(includes, excludes):
-    """Mirror Déjà Dup's nested include/exclude handling (restic issue #3408)."""
-    def resolve(paths):
-        expanded = (expand_path(p) for p in paths)
-        return list(dict.fromkeys(os.path.realpath(p) for p in expanded if p and os.path.isabs(p)))
-    inc = [p for p in resolve(includes) if os.path.exists(p)]
-    exc = resolve(excludes)
-    patterns = []
-    for path in exc:
-        if path not in inc:
-            patterns += [_escape_path(path), _escape_path(path) + "/*"]
-    for path in inc:
-        patterns.append("!" + _escape_path(path))
-    patterns.sort(key=_prefix_key)
-    return inc, [f"--exclude={p}" for p in patterns]
+    """Return (backup targets, --exclude arguments) for restic.
+
+    restic checks exclude patterns in order and the last matching one wins;
+    a leading "!" turns a pattern into an exception that keeps the file. To
+    support folders picked inside ignored folders (and the other way around),
+    each rule is ranked by how deep its path is, so the most specific rule for
+    any file comes last. An ignored folder gets two rules: one for the folder
+    itself and one for its contents, which is what lets a nested exception win.
+    """
+    targets = [path for path in _absolute_paths(includes) if os.path.exists(path)]
+    rules = []
+    for path in _absolute_paths(excludes):
+        if path in targets:
+            continue  # explicitly chosen for backup; that takes priority
+        depth = path.count("/")
+        rules.append((depth, EXCLUDE, _literal(path)))
+        rules.append((depth + 1, EXCLUDE, _literal(path) + "/*"))
+    for path in targets:
+        rules.append((path.count("/"), INCLUDE, "!" + _literal(path)))
+    rules.sort(key=lambda rule: rule[:2])
+    return targets, [f"--exclude={pattern}" for _depth, _kind, pattern in rules]
 
 
 def _signal_restic_descendants(root_pid, sig):
