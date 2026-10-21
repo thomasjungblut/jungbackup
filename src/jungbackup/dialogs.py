@@ -50,9 +50,7 @@ class PasswordDialog(Adw.Dialog):
         self.set_focus(self._entry)
 
     def _unlock(self, *_):
-        password = self._entry.get_text()
-        if not password:
-            return
+        password = self._entry.get_text()   # empty for unencrypted backups
         self._button.set_sensitive(False)
         self._button.set_child(Adw.Spinner())
         self._error.set_visible(False)

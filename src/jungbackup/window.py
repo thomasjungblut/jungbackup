@@ -386,9 +386,18 @@ class Window(Adw.ApplicationWindow):
                     s.encrypted = bool(password)
                     finished(s, password)
                     self._on_snapshots(data, None)
-                PasswordDialog(self.restic, s.repository, unlocked,
-                               body="Enter the password you chose in Déjà Dup. Déjà Dup keeps it in its own "
-                                    "private keyring, so it can't be imported automatically.").present(self)
+
+                def tried_without_password(data, error):
+                    if error is None:
+                        # Déjà Dup lets you skip encryption; such repos open without a password.
+                        unlocked("", data)
+                        self.toast("This backup is not encrypted")
+                        return
+                    PasswordDialog(self.restic, s.repository, unlocked,
+                                   body="Enter the password you chose in Déjà Dup. Déjà Dup keeps it in its own "
+                                        "private keyring, so it can't be imported automatically.").present(self)
+
+                self.restic.snapshots(s.repository, "", tried_without_password)
             else:
                 SetupDialog(self.restic, s, finished, title="Import from Déjà Dup",
                             notes=result.notes).present(self)
