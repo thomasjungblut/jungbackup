@@ -29,6 +29,19 @@ run: .venv ## Run the app from the source tree
 lint: .venv ## Lint Python code with ruff
 	uv run ruff check src
 
+.PHONY: unit-test
+unit-test: .venv ## Run the unit tests (need neither restic nor podman)
+	uv run pytest -m "not integration"
+
+.PHONY: integration-test
+integration-test: .venv ## Run the integration tests (need restic, and podman for SFTP)
+	uv run pytest -m integration
+
+.PHONY: test
+test: ## Run the unit tests, then the integration tests
+	$(MAKE) unit-test
+	$(MAKE) integration-test
+
 .PHONY: validate
 validate: ## Validate the desktop file and AppStream metainfo
 	desktop-file-validate data/$(APP_ID).desktop

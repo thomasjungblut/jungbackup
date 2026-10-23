@@ -17,7 +17,23 @@ flags, so either app can restore or prune the other's backups.
   sandboxed keyring, so you type it once and it's stored in your keyring. The
   app offers to switch off Déjà Dup's schedule so the two don't both back up.
 * **Set up new backup**: choose a folder (local disk, USB drive or a mounted
-  network share), pick a password, done.
+  network share) or an SFTP server, pick a password, done.
+
+## Storage
+
+| Backend | Repository | Notes |
+|---|---|---|
+| Folder | `/run/media/me/disk/backup` | Local disks, USB drives, mounted NFS/SMB/GVfs shares |
+| SFTP server | `sftp:user@host:path`, `sftp://user@host:port//abs/path` | restic's own SFTP backend via `ssh` |
+
+SFTP uses your SSH keys, agent and `~/.ssh/config` (a `Host` alias works as
+the server name). There's no terminal for a password prompt, so the server must
+accept key logins; ssh runs with `BatchMode=yes` and trusts a server's key on
+first contact (`StrictHostKeyChecking=accept-new`). A Déjà Dup "Network
+server" location with an `sftp://` address is imported as SFTP directly, no
+mount needed.
+
+Each backend is a module in `storage/` implementing `storage.base.Storage`.
 
 ## Development
 
@@ -29,7 +45,15 @@ system site-packages:
 make setup    # uv venv --python /usr/bin/python3 --system-site-packages && uv sync
 make run      # uv run jungbackup
 make check    # ruff + desktop file and metainfo validation
+make unit-test         # fast, no restic or podman needed
+make integration-test  # real restic, local folder + SFTP container
+make test              # both, one after the other
 ```
+
+Integration tests run the real restic (same lookup as the app, so
+`JUNGBACKUP_RESTIC=/path/to/restic make test` works) against a local folder
+and an OpenSSH container started with podman, using a throwaway key and
+`known_hosts`. They're skipped when restic or podman is missing.
 
 `make help` lists all targets.
 
@@ -41,16 +65,16 @@ Settings: `~/.config/jungbackup/settings.json`. Stats cache:
 
 ## Layout
 
-| Module | Purpose |
+Under `src/jungbackup/`:
+
+| Package | Purpose |
 |---|---|
-| `window.py` | Dashboard, welcome page, scheduler |
-| `engine.py` | Backup job: init → backup → forget/prune (Déjà Dup-compatible flags) |
-| `restic.py` | Running restic (queries and streamed JSON jobs; password via stdin) |
-| `monitor.py` | `/proc` sampling of running restic/duplicity (CPU, RSS, I/O rates, open file) |
-| `settings.py` | This app's settings and the Déjà Dup import |
-| `dejadup.py` | Reading/writing Déjà Dup's GSettings / Flatpak keyfile |
-| `dialogs.py`, `prefs.py` | Setup flow, password prompt, settings dialog |
-| `charts.py` | Cairo bar charts, sparklines, stacked bar |
+| `app.py` | `Adw.Application`, autostart portal |
+| `ui/` | Dashboard and scheduler (`window.py`), setup flow, password prompt, settings dialog, Cairo charts |
+| `backup/` | Running restic (`restic.py`; password via stdin), the backup job (`job.py`: init → backup → forget/prune, Déjà Dup-compatible flags), `/proc` sampling of running restic/duplicity (`monitor.py`) |
+| `storage/` | Storage backends: `local.py`, `sftp.py`, the shared interface in `base.py` |
+| `dejadup/` | Reading/writing Déjà Dup's GSettings / Flatpak keyfile, importing its settings, launching it |
+| `core/` | This app's settings, keyring, `$HOME`-style path tokens, formatting helpers |
 
 ## Flatpak
 
