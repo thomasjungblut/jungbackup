@@ -10,8 +10,9 @@ import time
 
 from gi.repository import GLib
 
-from .dejadup import expand_path
-from .restic import EXIT_INCOMPLETE, EXIT_LOCKED, is_empty_or_missing, is_repository
+from ..core.paths import expand_path
+from ..storage import EXISTING, NEW, OCCUPIED, for_repository
+from .restic import EXIT_INCOMPLETE, EXIT_LOCKED
 
 EXCLUDE, INCLUDE = 0, 1
 
@@ -111,9 +112,11 @@ def _signal_restic_descendants(root_pid, sig):
 class BackupJob:
     """init (if needed) → backup → forget old snapshots."""
 
-    def __init__(self, restic, settings, password, on_update, on_done):
+    def __init__(self, restic, settings, password, on_update, on_done, create=True):
         self._restic = restic
         self._settings = settings
+        self._storage = for_repository(settings.repository)
+        self._create = create
         self._password = password
         self._on_update = on_update
         self._on_done = on_done
@@ -126,14 +129,22 @@ class BackupJob:
         self.warnings = []
 
     def start(self):
-        repo = self._settings.repository
-        if is_repository(repo):
+        self._storage.probe(self._restic, self._after_probe)
+
+    def _after_probe(self, state, message):
+        if self.cancelled:
+            self._finish(False, None)
+        elif state == EXISTING:
             self._backup()
-        elif is_empty_or_missing(repo):
+        elif state == NEW and self._create:
             self._set_phase("creating")
-            self._restic.init(repo, self._password, self._after_init)
-        else:
+            self._restic.init(self._settings.repository, self._password, self._after_init)
+        elif state == NEW:
+            self._finish(False, "The backup wasn't found at its location anymore.")
+        elif state == OCCUPIED:
             self._finish(False, "The backup folder isn't empty and doesn't contain a restic backup.")
+        else:
+            self._finish(False, message)
 
     def cancel(self):
         self.cancelled = True
@@ -148,7 +159,7 @@ class BackupJob:
 
     def _after_init(self, _data, error):
         if error:
-            self._finish(False, f"Could not create the backup: {error}")
+            self._finish(False, f"Could not create the backup: {self._storage.explain(error)}")
         elif self.cancelled:
             self._finish(False, None)
         else:
@@ -194,7 +205,7 @@ class BackupJob:
             self._finish(False, "The backup is in use by another program (maybe Déjà Dup). Try again later.")
             return
         if status not in (0, EXIT_INCOMPLETE):
-            self._finish(False, error or f"restic exited with status {status}")
+            self._finish(False, self._storage.explain(error) if error else f"restic exited with status {status}")
             return
         if status == EXIT_INCOMPLETE and not self.warnings:
             self.warnings.append("Some files could not be read and were skipped.")
@@ -218,7 +229,7 @@ class BackupJob:
         self._job = None
         # Like Déjà Dup, cleaning up is best effort; the backup itself succeeded.
         if status not in (0,) and not self.cancelled:
-            self.warnings.append(f"Old backups were not cleaned up: {error}")
+            self.warnings.append(f"Old backups were not cleaned up: {self._storage.explain(error)}")
         self._finish(True, None)
 
     def _finish(self, ok, error):

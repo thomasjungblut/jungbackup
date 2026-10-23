@@ -15,7 +15,7 @@ dependencies = []
 jungbackup = "jungbackup.app:main"
 
 [dependency-groups]
-dev = ["ruff>=0.6"]
+dev = ["ruff>=0.6", "pytest>=8"]
 
 [build-system]
 requires = ["hatchling"]
@@ -26,11 +26,16 @@ packages = ["src/jungbackup"]
 
 [tool.ruff]
 line-length = 120
-src = ["src"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+markers = ["integration: runs restic (and podman for SFTP); skipped when they're missing"]
 
 [tool.uv]
 # GTK/libadwaita bindings come from the system Python; never use a uv-managed one.

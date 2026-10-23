@@ -7,16 +7,13 @@ from datetime import timedelta
 
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
-from . import keyring
-from .charts import BarChart, BreakdownBar, Sparkline, Swatch
-from .dejadup import DejaDupConfig, describe_path
-from .dialogs import PasswordDialog, SetupDialog
-from .engine import BackupJob
-from .monitor import NUM_CPUS, ProcessMonitor
-from .prefs import PreferencesDialog, open_deja_dup
-from .restic import Restic, is_repository
-from .settings import Settings, import_from_deja_dup
-from .util import (
+from ..backup.job import BackupJob
+from ..backup.monitor import NUM_CPUS, ProcessMonitor
+from ..backup.restic import Restic
+from ..core import keyring
+from ..core.paths import describe_path
+from ..core.settings import Settings
+from ..core.util import (
     fmt_ago,
     fmt_bytes,
     fmt_bytes_short,
@@ -30,6 +27,14 @@ from .util import (
     now,
     parse_time,
 )
+from ..dejadup.config import DejaDupConfig
+from ..dejadup.importer import import_from_deja_dup
+from ..dejadup.launch import open_deja_dup
+from ..storage import for_repository
+from .charts import BarChart, BreakdownBar, Sparkline, Swatch
+from .password import PasswordDialog
+from .prefs import PreferencesDialog
+from .setup import SetupDialog
 
 STATS_CACHE = os.path.join(GLib.get_user_cache_dir(), "jungbackup", "stats.json")
 HISTORY_BARS = 30
@@ -338,8 +343,8 @@ class Window(Adw.ApplicationWindow):
             self.import_btn.set_visible(result is not None)
             if result is not None:
                 s = result.settings
-                where = s.repository or "a location this app can't use yet"
-                self.import_hint.set_label(f"Found Déjà Dup backups in {describe_path(where)}")
+                where = for_repository(s.repository).label if s.repository else "a location this app can't use yet"
+                self.import_hint.set_label(f"Found Déjà Dup backups in {where}")
             self.stack.set_visible_child_name("welcome")
             self.refresh_btn.set_visible(False)
             self.edit_btn.set_visible(False)
@@ -358,7 +363,7 @@ class Window(Adw.ApplicationWindow):
             self.toast("No Déjà Dup settings found")
             return
         s = result.settings
-        body = (f"Location: {s.repository or '—'}\n"
+        body = (f"Location: {for_repository(s.repository).label if s.repository else '—'}\n"
                 f"Backing up: {', '.join(describe_path(p) for p in s.includes)}\n"
                 f"Ignoring: {', '.join(describe_path(p) for p in s.excludes) or 'nothing'}\n"
                 f"Schedule: {'every ' + fmt_days(s.period_days) if s.periodic else 'manual'}"
@@ -385,7 +390,7 @@ class Window(Adw.ApplicationWindow):
                 self._adopt(settings, password)
                 self.toast("Imported settings from Déjà Dup")
 
-            if is_repository(s.repository):
+            if for_repository(s.repository).has_repository():
                 # Same repository as Déjà Dup: we only need its password.
                 def unlocked(password, data):
                     s.encrypted = bool(password)
@@ -440,7 +445,7 @@ class Window(Adw.ApplicationWindow):
         wanted = self.settings.configured and self.settings.periodic
         if wanted != getattr(self, "_autostart", None):
             self._autostart = wanted
-            from .app import request_autostart
+            from ..app import request_autostart
             request_autostart(self if self.get_visible() else None, wanted)
 
     def _forget_password(self):
@@ -480,7 +485,7 @@ class Window(Adw.ApplicationWindow):
         if self.password is None or self._fetching or not self.restic.available:
             self._render_all()
             return
-        if not is_repository(self.settings.repository):
+        if self.storage.has_repository() is False:
             self.stats_error = "unreachable"
             self._render_all()
             return
@@ -495,7 +500,7 @@ class Window(Adw.ApplicationWindow):
             if error.wrong_password:
                 self.password = None
                 keyring.forget(self.settings.repository)
-            self.stats_error = str(error)
+            self.stats_error = self.storage.explain(error)
             self._render_all()
             return
         self.stats_error = None
@@ -524,22 +529,19 @@ class Window(Adw.ApplicationWindow):
             self.settings.last_backup = latest.isoformat()
             self.settings.save()
 
+    @property
+    def storage(self):
+        return for_repository(self.settings.repository)
+
     def _query_filesystem(self):
-        path = self.settings.repository
-        if not path or not os.path.isdir(path):
+        if not self.settings.repository:
             self.fs_info = None
             return
 
-        def done(file, result):
-            try:
-                info = file.query_filesystem_info_finish(result)
-                self.fs_info = (info.get_attribute_uint64("filesystem::size"),
-                                info.get_attribute_uint64("filesystem::free"))
-            except GLib.Error:
-                self.fs_info = None
+        def done(info):
+            self.fs_info = info
             self._render_tiles()
-        Gio.File.new_for_path(path).query_filesystem_info_async(
-            "filesystem::size,filesystem::free", GLib.PRIORITY_DEFAULT, None, done)
+        self.storage.query_space(done)
 
     def _load_stats_cache(self):
         try:
@@ -571,7 +573,8 @@ class Window(Adw.ApplicationWindow):
             return
         self.settings.last_attempt = now().isoformat()
         self.settings.save()
-        self.job = BackupJob(self.restic, self.settings, self.password, self._on_job_update, self._on_job_done)
+        self.job = BackupJob(self.restic, self.settings, self.password, self._on_job_update, self._on_job_done,
+                             create=not automatic)
         self.get_application().hold()
         self.job.start()
         self._render_all()
@@ -612,7 +615,7 @@ class Window(Adw.ApplicationWindow):
             due = s.next_backup_time
             last_attempt = parse_time(s.last_attempt)
             retry_ok = last_attempt is None or now() - last_attempt > timedelta(hours=1)
-            if due is not None and due <= now() and retry_ok and is_repository(s.repository):
+            if due is not None and due <= now() and retry_ok and self.storage.has_repository() is not False:
                 self.backup_now(automatic=True)
         return GLib.SOURCE_CONTINUE
 
@@ -676,7 +679,7 @@ class Window(Adw.ApplicationWindow):
         elif self.password is None and self.settings.encrypted:
             self._set_banner("Enter your backup password to see statistics and back up", "Unlock",
                              self.ask_password)
-        elif self.stats_error == "unreachable" or not os.path.isdir(self.settings.repository):
+        elif self.stats_error == "unreachable" or not self.storage.reachable():
             self._set_banner("The backup location isn't available. Is the drive or network share mounted?",
                              "Retry", self.refresh)
         elif self.stats_error:
@@ -741,7 +744,7 @@ class Window(Adw.ApplicationWindow):
             title = {"creating": "Creating Backup…", "backing-up": "Backing Up…",
                      "cleaning-up": "Removing Old Backups…"}.get(job.phase, "Preparing…")
             started = job.started
-            sub = f"Saving to {describe_path(self.settings.repository)}"
+            sub = f"Saving to {self.storage.label}"
         else:
             who = "Déjà Dup" if act.engine in ("restic", "duplicity") else act.engine
             title = f"{who} is running {act.operation}"
@@ -838,7 +841,7 @@ class Window(Adw.ApplicationWindow):
             size, free = self.fs_info
             t["free"].set(fmt_bytes(free), f"{100 * free / size:.0f}% of {fmt_bytes(size)}")
         else:
-            t["free"].set("—", "location not available")
+            t["free"].set("—", "unknown for this location" if self.storage.reachable() else "location not available")
 
     def _render_breakdown(self):
         latest = self._latest()
@@ -904,7 +907,7 @@ class Window(Adw.ApplicationWindow):
             return False
         s, r = self.settings, self.cfg_rows
         esc = GLib.markup_escape_text
-        r["location"].set_subtitle(esc(s.repository))
+        r["location"].set_subtitle(esc(self.storage.label))
         r["schedule"].set_subtitle(("Daily" if s.period_days == 1 else f"Every {fmt_days(s.period_days)}")
                                    if s.periodic else "Manual only")
         r["keep"].set_subtitle("Forever" if s.keep_days == 0 else f"At least {fmt_days(s.keep_days)}")

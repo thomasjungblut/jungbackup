@@ -12,6 +12,8 @@ import subprocess
 
 from gi.repository import Gio, GLib
 
+from ..storage import for_repository
+
 DEJA_DUP_APP = "org.gnome.DejaDup"
 CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "jungbackup", "restic")
 
@@ -22,9 +24,10 @@ EXIT_INCOMPLETE = 3      # backup finished, but some files could not be read
 
 
 class ResticError(Exception):
-    def __init__(self, message, code=None):
+    def __init__(self, message, code=None, details=""):
         super().__init__(message)
         self.code = code
+        self.details = details   # all of stderr, e.g. what ssh printed before restic gave up
 
     @property
     def wrong_password(self):
@@ -66,23 +69,6 @@ def find_restic():
     return None
 
 
-def is_repository(path):
-    try:
-        names = os.listdir(path)
-    except OSError:
-        return False
-    return "config" in names and "snapshots" in names
-
-
-def is_empty_or_missing(path):
-    try:
-        return not os.listdir(path)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-
-
 class Restic:
     def __init__(self):
         self.argv = find_restic()
@@ -94,7 +80,7 @@ class Restic:
     def _argv(self, repo, password, args, nice=False):
         os.makedirs(CACHE_DIR, exist_ok=True)
         argv = (["nice", "-n", "10"] if nice and shutil.which("nice") else []) + list(self.argv)
-        argv += ["--repo", repo, "--json", "--cache-dir", CACHE_DIR]
+        argv += ["--repo", repo, "--json", "--cache-dir", CACHE_DIR, *for_repository(repo).restic_options()]
         if not password:
             argv.append("--insecure-no-password")
         return argv + list(args)
@@ -128,7 +114,7 @@ class Restic:
                 return
             status = proc.get_exit_status()
             if status != 0:
-                callback(None, ResticError(_last_error(err, status), status))
+                callback(None, ResticError(_last_error(err, status), status, err or ""))
                 return
             try:
                 callback(json.loads(out) if out.strip() else None, None)
@@ -151,7 +137,7 @@ class Restic:
     # Streamed jobs -------------------------------------------------------------
 
     def stream(self, repo, password, args, on_message, on_exit, nice=True):
-        """Run a long job, calling on_message(dict) per JSON line and on_exit(status, error_text)."""
+        """Run a long job, calling on_message(dict) per JSON line and on_exit(status, ResticError or None)."""
         return _StreamedJob(self._argv(repo, password, args, nice=nice), password, on_message, on_exit)
 
 
@@ -216,7 +202,8 @@ class _StreamedJob:
         except GLib.Error:
             pass
         status = proc.get_exit_status() if proc.get_if_exited() else -1
-        err = None if status == 0 else _last_error("\n".join(self._stderr), status)
+        stderr = "\n".join(self._stderr)
+        err = None if status == 0 else ResticError(_last_error(stderr, status), status, stderr)
         self._on_exit(status, err)
 
     def cancel(self):

@@ -1,93 +1,39 @@
-"""Password prompt and the first-run / change-location setup flow."""
+"""The first-run / change-location setup flow."""
 
 import os
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .dejadup import describe_path
-from .restic import is_empty_or_missing, is_repository
-from .settings import Settings
+from ..core.paths import describe_path
+from ..core.settings import Settings
+from ..storage import BACKENDS, EXISTING, NEW, OCCUPIED, UNREACHABLE, LocalStorage, for_repository
+from ..storage.local import is_empty_or_missing, is_repository
 
-
-def _boxed(*rows):
-    box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-    box.add_css_class("boxed-list")
-    for row in rows:
-        box.append(row)
-    return box
-
-
-class PasswordDialog(Adw.Dialog):
-    """Ask for an existing repository's password and verify it with restic."""
-
-    def __init__(self, restic, repo, on_unlocked, body=None):
-        super().__init__(title="Unlock Backup", content_width=420)
-        self._restic, self._repo, self._on_unlocked = restic, repo, on_unlocked
-
-        view = Adw.ToolbarView()
-        view.add_top_bar(Adw.HeaderBar())
-        self.set_child(view)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
-                      margin_top=12, margin_bottom=24, margin_start=24, margin_end=24)
-        view.set_content(box)
-        intro = Gtk.Label(wrap=True, xalign=0, label=body or
-                          "Enter the password you chose when setting up this backup. "
-                          "It is saved in your keyring so you only need to do this once.")
-        box.append(intro)
-        box.append(Gtk.Label(label=repo, xalign=0, wrap=True, wrap_mode=2, css_classes=["dim-label", "caption"]))
-
-        self._entry = Adw.PasswordEntryRow(title="Backup Password")
-        self._entry.connect("entry-activated", self._unlock)
-        box.append(_boxed(self._entry))
-
-        self._error = Gtk.Label(xalign=0, wrap=True, visible=False, css_classes=["error"])
-        box.append(self._error)
-
-        self._button = Gtk.Button(label="Unlock", halign=Gtk.Align.CENTER, css_classes=["pill", "suggested-action"])
-        self._button.connect("clicked", self._unlock)
-        box.append(self._button)
-        self.set_focus(self._entry)
-
-    def _unlock(self, *_):
-        password = self._entry.get_text()   # empty for unencrypted backups
-        self._button.set_sensitive(False)
-        self._button.set_child(Adw.Spinner())
-        self._error.set_visible(False)
-
-        def verified(data, error):
-            self._button.set_sensitive(True)
-            self._button.set_child(None)
-            self._button.set_label("Unlock")
-            if error is not None:
-                self._error.set_label("Wrong password." if error.wrong_password else str(error))
-                self._error.set_visible(True)
-                self._entry.grab_focus()
-                return
-            self.close()
-            self._on_unlocked(password, data)
-
-        self._restic.snapshots(self._repo, password, verified)
+PROBE_DELAY_MS = 700   # wait for typing to settle before connecting to a server
 
 
 class SetupDialog(Adw.Dialog):
-    """Choose a backup folder and password, creating the repository if needed.
+    """Choose a backup location and password, creating the repository if needed.
 
     on_done(settings, password) is called once the repository exists and the
     password has been verified.
     """
 
     def __init__(self, restic, settings, on_done, title="Set Up Backups", notes=()):
-        super().__init__(title=title, content_width=480, content_height=560)
+        super().__init__(title=title, content_width=480, content_height=600)
         self._restic = restic
         self._settings = Settings(**vars(settings))
         self._on_done = on_done
+        self._state = None
+        self._probe_source = 0
+        self._probe_cancellable = None
+        self.connect("closed", lambda *_: self._cancel_probe())
 
         self._nav = Adw.NavigationView()
         self.set_child(self._nav)
         self._nav.add(self._location_page(notes))
         self._password_page = None
-        self._update_location()
+        self._backend_changed()
 
     # Page 1: where ---------------------------------------------------------
 
@@ -98,8 +44,8 @@ class SetupDialog(Adw.Dialog):
         view.set_content(page)
 
         intro = Adw.PreferencesGroup(
-            description="Choose where to keep your backups — ideally a different drive or a network share. "
-                        "Pick an empty folder to start fresh, or an existing Déjà Dup/restic backup folder.")
+            description="Choose where to keep your backups — ideally a different drive, a network share "
+                        "or a server. Pick an empty folder to start fresh, or an existing Déjà Dup/restic backup.")
         page.add(intro)
 
         for note in notes:
@@ -111,16 +57,41 @@ class SetupDialog(Adw.Dialog):
 
         group = Adw.PreferencesGroup(title="Backup Location")
         page.add(group)
+        current = for_repository(self._settings.repository) if self._settings.repository else LocalStorage("")
+        self._backend = Adw.ComboRow(title="Store Backups On", model=Gtk.StringList.new([b.name for b in BACKENDS]),
+                                     selected=BACKENDS.index(type(current)))
+        self._backend.connect("notify::selected", lambda *_: self._backend_changed())
+        group.add(self._backend)
+
         self._folder_row = Adw.ActionRow(title="Folder", subtitle_selectable=True)
         self._folder_row.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
         choose = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
         choose.connect("clicked", self._choose)
         self._folder_row.add_suffix(choose)
         group.add(self._folder_row)
+        self._local_repo = current.repo if isinstance(current, LocalStorage) else ""
+
+        # Entry rows for every remote backend, filled from the current location when it's that kind.
+        self._field_rows = {}
+        for backend in BACKENDS:
+            values = current.fields() if isinstance(current, backend) else {}
+            rows = {}
+            for key, title, hint in backend.FIELDS:
+                row = Adw.EntryRow(title=title, text=values.get(key, ""), tooltip_text=hint)
+                row.connect("changed", lambda *_: self._fields_changed())
+                group.add(row)
+                rows[key] = row
+            self._field_rows[backend] = rows
+        self._field_hint = Adw.ActionRow(title_lines=0, css_classes=["dim-label"],
+                                         title="restic connects with ssh, using your SSH keys, agent and "
+                                               "~/.ssh/config. The server has to accept key logins.")
+        group.add(self._field_hint)
 
         self._state_row = Adw.ActionRow(title_lines=0)
         self._state_icon = Gtk.Image()
+        self._state_spinner = Adw.Spinner(visible=False)
         self._state_row.add_prefix(self._state_icon)
+        self._state_row.add_prefix(self._state_spinner)
         group.add(self._state_row)
 
         what = Adw.PreferencesGroup(title="What Gets Backed Up",
@@ -138,9 +109,31 @@ class SetupDialog(Adw.Dialog):
         view.add_bottom_bar(bottom)
         return Adw.NavigationPage(title=self.get_title(), child=view, tag="location")
 
+    @property
+    def _selected_backend(self):
+        return BACKENDS[self._backend.get_selected()]
+
+    def _backend_changed(self):
+        backend = self._selected_backend
+        self._folder_row.set_visible(backend is LocalStorage)
+        for kind, rows in self._field_rows.items():
+            for row in rows.values():
+                row.set_visible(kind is backend)
+        self._field_hint.set_visible(bool(backend.FIELDS))
+        self._fields_changed()
+
+    def _fields_changed(self):
+        backend = self._selected_backend
+        if backend is LocalStorage:
+            self._settings.repository = self._local_repo
+        else:
+            storage = backend.from_fields({k: r.get_text() for k, r in self._field_rows[backend].items()})
+            self._settings.repository = storage.repo if storage else ""
+        self._update_location()
+
     def _choose(self, _btn):
         dialog = Gtk.FileDialog(title="Choose Backup Folder", modal=True, accept_label="Select")
-        parent = self._settings.repository and os.path.dirname(self._settings.repository)
+        parent = self._local_repo and os.path.dirname(self._local_repo)
         if parent and os.path.isdir(parent):
             dialog.set_initial_folder(Gio.File.new_for_path(parent))
 
@@ -153,40 +146,62 @@ class SetupDialog(Adw.Dialog):
             # Like Déjà Dup, use a per-machine subfolder when the chosen folder is in use.
             if not is_repository(path) and not is_empty_or_missing(path):
                 path = os.path.join(path, GLib.get_host_name())
-            self._settings.repository = path
-            self._update_location()
+            self._local_repo = path
+            self._fields_changed()
 
         dialog.select_folder(self.get_root(), None, done)
 
-    def _repo_state(self):
-        path = self._settings.repository
-        if not path:
-            return "none"
-        if is_repository(path):
-            return "existing"
-        if is_empty_or_missing(path):
-            parent = os.path.dirname(path.rstrip("/"))
-            return "new" if os.path.isdir(path) or os.path.isdir(parent) else "unreachable"
-        return "occupied"
+    def _cancel_probe(self):
+        if self._probe_source:
+            GLib.source_remove(self._probe_source)
+            self._probe_source = 0
+        if self._probe_cancellable is not None:
+            self._probe_cancellable.cancel()
+            self._probe_cancellable = None
 
     def _update_location(self):
-        state = self._repo_state()
-        self._folder_row.set_subtitle(GLib.markup_escape_text(self._settings.repository or "Not chosen yet"))
+        self._cancel_probe()
+        repo = self._settings.repository
+        local = self._selected_backend is LocalStorage
+        self._folder_row.set_subtitle(GLib.markup_escape_text(repo if local and repo else "Not chosen yet"))
+        if not repo:
+            self._show_state(None, "Choose a folder to continue." if local else "Enter the server and folder.")
+            return
+        storage = for_repository(repo)
+        if local:
+            storage.probe(self._restic, self._show_state)
+            return
+        self._show_state("checking", None)
+
+        def start():
+            self._probe_source = 0
+            self._probe_cancellable = Gio.Cancellable()
+            storage.probe(self._restic, self._show_state, self._probe_cancellable)
+            return GLib.SOURCE_REMOVE
+        self._probe_source = GLib.timeout_add(PROBE_DELAY_MS, start)
+
+    def _show_state(self, state, message):
+        self._probe_cancellable = None
+        self._state = state
         text, icon = {
-            "none": ("Choose a folder to continue.", "folder-symbolic"),
-            "existing": ("An existing backup was found here. You'll need its password.", "object-select-symbolic"),
-            "new": ("A new, empty backup will be created here.", "list-add-symbolic"),
-            "occupied": ("This folder contains other files. Choose an empty folder.", "dialog-warning-symbolic"),
-            "unreachable": ("This folder isn't reachable. Is the drive or share mounted?", "dialog-warning-symbolic"),
+            None: (message, "folder-symbolic"),
+            "checking": ("Connecting…", None),
+            EXISTING: ("An existing backup was found here. You'll need its password.", "object-select-symbolic"),
+            NEW: ("A new, empty backup will be created here.", "list-add-symbolic"),
+            OCCUPIED: ("This folder contains other files. Choose an empty folder.", "dialog-warning-symbolic"),
+            UNREACHABLE: (message, "dialog-warning-symbolic"),
         }[state]
-        self._state_row.set_title(text)
-        self._state_icon.set_from_icon_name(icon)
-        self._next.set_sensitive(state in ("existing", "new"))
+        self._state_row.set_title(GLib.markup_escape_text(text or ""))
+        self._state_spinner.set_visible(icon is None)
+        self._state_icon.set_visible(icon is not None)
+        if icon:
+            self._state_icon.set_from_icon_name(icon)
+        self._next.set_sensitive(state in (EXISTING, NEW))
 
     # Page 2: password ------------------------------------------------------
 
     def _go_password(self, _btn):
-        existing = self._repo_state() == "existing"
+        existing = self._state == EXISTING
         view = Adw.ToolbarView()
         view.add_top_bar(Adw.HeaderBar())
         page = Adw.PreferencesPage()
@@ -244,7 +259,7 @@ class SetupDialog(Adw.Dialog):
             def verified(_data, error):
                 self._busy(False, label)
                 if error is not None:
-                    self._show_error("Wrong password." if error.wrong_password else str(error))
+                    self._show_error("Wrong password." if error.wrong_password else for_repository(repo).explain(error))
                     return
                 self._settings.encrypted = bool(password)
                 self._done(password)
@@ -260,18 +275,17 @@ class SetupDialog(Adw.Dialog):
             if password != self._pw2.get_text():
                 self._show_error("The passwords don't match.")
                 return
-        self._busy(True, label)
-        try:
-            os.makedirs(repo, exist_ok=True)
-        except OSError as e:
-            self._busy(False, label)
-            self._show_error(f"Could not create the folder: {e.strerror}")
+        storage = for_repository(repo)
+        problem = storage.prepare()
+        if problem:
+            self._show_error(problem)
             return
+        self._busy(True, label)
 
         def created(_data, error):
             self._busy(False, label)
             if error is not None:
-                self._show_error(f"Could not create the backup: {error}")
+                self._show_error(f"Could not create the backup: {storage.explain(error)}")
                 return
             self._settings.encrypted = encrypt
             self._settings.last_backup = ""

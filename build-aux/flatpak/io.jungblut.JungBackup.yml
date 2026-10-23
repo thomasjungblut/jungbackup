@@ -16,6 +16,10 @@ finish-args:
   - --filesystem=host
   # GVfs mounts (smb://, sftp:// opened in Files) appear here as FUSE paths.
   - --filesystem=xdg-run/gvfs
+  # SFTP backups: restic runs the runtime's ssh, which needs the network and
+  # the user's SSH agent (keys and ~/.ssh/config are covered by --filesystem=host).
+  - --share=network
+  - --socket=ssh-auth
   # Import from Déjà Dup and switch off its schedule so both apps don't back up
   # twice. Flatpak hides ~/.var/app even with --filesystem=host.
   - --filesystem=~/.var/app/org.gnome.DejaDup/config/glib-2.0/settings

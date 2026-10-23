@@ -6,9 +6,13 @@ directory instead of dconf, so we support both stores.
 """
 
 import os
+import posixpath
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from gi.repository import Gio, GLib
+
+from ..storage.sftp import build_repository
 
 SCHEMA = "org.gnome.DejaDup"
 KEYFILE = os.path.expanduser("~/.var/app/org.gnome.DejaDup/config/glib-2.0/settings/keyfile")
@@ -52,68 +56,6 @@ BACKEND_NAMES = {
     "rclone": "Rclone",
     "auto": "Not configured",
 }
-
-SPECIAL_DIRS = {
-    "$DESKTOP": GLib.UserDirectory.DIRECTORY_DESKTOP,
-    "$DOCUMENTS": GLib.UserDirectory.DIRECTORY_DOCUMENTS,
-    "$DOWNLOAD": GLib.UserDirectory.DIRECTORY_DOWNLOAD,
-    "$MUSIC": GLib.UserDirectory.DIRECTORY_MUSIC,
-    "$PICTURES": GLib.UserDirectory.DIRECTORY_PICTURES,
-    "$PUBLIC_SHARE": GLib.UserDirectory.DIRECTORY_PUBLIC_SHARE,
-    "$TEMPLATES": GLib.UserDirectory.DIRECTORY_TEMPLATES,
-    "$VIDEOS": GLib.UserDirectory.DIRECTORY_VIDEOS,
-}
-
-SPECIAL_LABELS = {
-    "$HOME": "Home",
-    "$TRASH": "Trash",
-    "$DESKTOP": "Desktop",
-    "$DOCUMENTS": "Documents",
-    "$DOWNLOAD": "Downloads",
-    "$MUSIC": "Music",
-    "$PICTURES": "Pictures",
-    "$PUBLIC_SHARE": "Public",
-    "$TEMPLATES": "Templates",
-    "$VIDEOS": "Videos",
-}
-
-
-def expand_path(token):
-    home = GLib.get_home_dir()
-    if token == "$HOME":
-        return home
-    if token == "$TRASH":
-        return os.path.join(GLib.get_user_data_dir(), "Trash")
-    if token in SPECIAL_DIRS:
-        return GLib.get_user_special_dir(SPECIAL_DIRS[token])   # None if not set up
-    if token.startswith("$HOME/"):
-        return os.path.join(home, token[6:])
-    return token
-
-
-def describe_path(token):
-    """Human label for an include/exclude entry."""
-    if token in SPECIAL_LABELS:
-        return SPECIAL_LABELS[token]
-    path = expand_path(token) or token
-    home = GLib.get_home_dir()
-    if path == home:
-        return "Home"
-    if path.startswith(home + "/"):
-        return "~/" + path[len(home) + 1:]
-    return path
-
-
-def collapse_path(path):
-    """Store paths the same way Déjà Dup does."""
-    home = GLib.get_home_dir()
-    if path == home:
-        return "$HOME"
-    for token, kind in SPECIAL_DIRS.items():
-        if GLib.get_user_special_dir(kind) == path:
-            return token
-    return path
-
 
 class _GSettingsStore:
     def __init__(self, on_changed):
@@ -187,6 +129,7 @@ class Location:
     label: str            # what the user sees
     path: str | None      # local filesystem path to the repository, if reachable
     problem: str | None   # why the path is unavailable
+    repository: str | None = None   # restic repository string for a non-local location
 
 
 class DejaDupConfig:
@@ -283,6 +226,12 @@ class DejaDupConfig:
             uri = self.get("uri", "remote")
             folder = self.folder("remote")
             label = f"{uri} › {folder}" if uri else "Network server"
+            if uri.startswith("sftp://"):
+                # Reach it with restic's own SFTP backend: no need to mount it in Files first.
+                url = urlsplit(uri)
+                repo = build_repository(url.hostname or "", posixpath.join(url.path or "/", folder),
+                                        url.username or "", str(url.port or ""))
+                return Location(backend, label, None, None, repo)
             path = Gio.File.new_for_uri(uri).get_path() if uri else None
             if path is None or not os.path.isdir(path):
                 return Location(backend, label, None, "The network server is not mounted.")

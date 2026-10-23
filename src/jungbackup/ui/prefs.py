@@ -1,11 +1,11 @@
 """The (re-)configure dialog behind the dashboard's edit button."""
 
-import subprocess
-
 from gi.repository import Adw, GLib, Gtk
 
-from .dejadup import collapse_path, describe_path
-from .util import fmt_days
+from ..core.paths import collapse_path, describe_path
+from ..core.util import fmt_days
+from ..dejadup.launch import open_deja_dup
+from ..storage import for_repository
 
 PERIODS = [1, 2, 3, 7, 14, 30]
 KEEP = [30, 90, 182, 365, 730, 0]
@@ -18,16 +18,6 @@ def _choices(values, current, label):
     if current not in values:
         values = sorted(values + [current], key=lambda v: (v == 0, v))
     return values, Gtk.StringList.new([label(v) for v in values])
-
-
-def open_deja_dup(*args):
-    for argv in (["deja-dup", *args], ["flatpak", "run", "org.gnome.DejaDup", *args]):
-        try:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            return True
-        except OSError:
-            continue
-    return False
 
 
 class PreferencesDialog(Adw.PreferencesDialog):
@@ -65,9 +55,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # Location ---------------------------------------------------------
         location = Adw.PreferencesGroup(title="Storage Location")
         page.add(location)
-        row = Adw.ActionRow(title="Backup Folder", subtitle=GLib.markup_escape_text(settings.repository),
+        storage = for_repository(settings.repository)
+        row = Adw.ActionRow(title=storage.name, subtitle=GLib.markup_escape_text(storage.label),
                             subtitle_selectable=True)
-        row.add_prefix(Gtk.Image(icon_name="folder-remote-symbolic"))
+        row.add_prefix(Gtk.Image(icon_name=storage.icon))
         change = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
         change.connect("clicked", lambda *_: (self.close(), on_change_location()))
         row.add_suffix(change)

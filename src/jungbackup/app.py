@@ -8,7 +8,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
-from .window import Window  # noqa: E402
+from .ui.window import Window  # noqa: E402
 
 APP_ID = "io.jungblut.JungBackup"
 VERSION = "0.1.0"
@@ -36,7 +36,7 @@ class Application(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        css.load_from_path(os.path.join(os.path.dirname(__file__), "style.css"))
+        css.load_from_path(os.path.join(os.path.dirname(__file__), "ui", "style.css"))
         # Running from a source checkout: pick up the app icon from data/.
         icons = os.path.join(os.path.dirname(__file__), "..", "..", "data", "icons")
         if os.path.isdir(icons):
