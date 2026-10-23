@@ -3,9 +3,16 @@
 Déjà Dup does not expose its progress to other apps, but the backup engine
 (restic or duplicity) is an ordinary process, so we can sample its CPU time,
 memory, I/O counters and open files to show what it is doing right now.
+
+Low CPU with little I/O usually means the backup is waiting on something. The
+kernel shows what: threads in uninterruptible sleep (D) are blocked on I/O, and
+their wait channel says whether it's a local disk or an NFS/SMB server. For an
+NFS repository, /proc/self/mountstats gives the round trip time per request,
+and TCP retransmits in /proc/net/snmp point at a lossy network.
 """
 
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -19,6 +26,8 @@ RESTIC_COMMANDS = {"backup", "restore", "forget", "prune", "check", "snapshots",
 QUERY_OPS = {"snapshots", "stats", "ls", "find", "diff", "cat", "version", "dump", "mount", "rclone"}
 HISTORY = 90
 SKIP_PREFIXES = ("/dev/", "/proc/", "/sys/", "/memfd:", "/run/", "/app/", "/usr/", "/etc/")
+WAIT_WINDOW = 15         # samples (seconds) behind the wait breakdown and NFS/TCP rates
+NETWORK_WCHANS = ("rpc_", "nfs", "cifs", "smb", "fuse", "sk_wait", "tcp_", "inet_", "unix_stream")
 
 
 @dataclass
@@ -45,8 +54,13 @@ class Activity:
     read_total: int
     write_total: int
     current_file: str | None
+    waits: dict              # share of recent samples spent in "cpu", "disk", "network", "idle"
+    io_pressure: float | None  # % of time all non-idle tasks stalled on I/O (PSI "full" avg10)
+    nfs: dict | None         # recent NFS requests, only when the repository is on an NFS mount
+    tcp_retrans: float | None  # % of TCP segments resent system-wide, only for a remote repository
     read_history: deque = field(default_factory=deque)
     write_history: deque = field(default_factory=deque)
+    rtt_history: deque = field(default_factory=deque)
 
 
 def _read(path):
@@ -63,6 +77,87 @@ def _boot_time():
         if line.startswith(b"btime "):
             return int(line.split()[1])
     return time.time() - time.monotonic()
+
+
+def _io_pressure():
+    for line in (_read("/proc/pressure/io") or b"").splitlines():
+        if line.startswith(b"full "):
+            return float(line.split(b"avg10=")[1].split()[0])
+    return None
+
+
+def _tcp_counters():
+    """(segments sent, segments retransmitted) since boot, or None."""
+    rows = [line.split() for line in (_read("/proc/net/snmp") or b"").splitlines() if line.startswith(b"Tcp:")]
+    if len(rows) < 2:
+        return None
+    tcp = dict(zip(rows[0][1:], rows[1][1:], strict=True))
+    return int(tcp[b"OutSegs"]), int(tcp[b"RetransSegs"])
+
+
+def parse_mountstats(data):
+    """{mount point: (fstype, {op: [ops, trans, timeouts, sent, recv, queue_ms, rtt_ms, exec_ms, ...]})}"""
+    mounts = {}
+    for block in data.split(b"\ndevice "):
+        head, _, body = block.partition(b"\n")
+        m = re.search(rb" mounted on (\S+) with fstype (\S+)", head)
+        if not m:
+            continue
+        ops = {}
+        if b"per-op statistics" in body:
+            for line in body.split(b"per-op statistics", 1)[1].splitlines():
+                name, sep, values = line.strip().partition(b": ")
+                if sep and name.isalpha():
+                    ops[name.decode()] = [int(v) for v in values.split()]
+        point = m[1].decode(errors="replace").replace("\\040", " ")
+        mounts[point] = (m[2].decode(), ops)
+    return mounts
+
+
+def nfs_summary(before, after, seconds):
+    """Average cost of the NFS requests made between two per-op snapshots."""
+    total = [0] * 8
+    for op, counters in after.items():
+        prev = before.get(op, [0] * len(counters))
+        for i in range(min(8, len(counters))):
+            total[i] += counters[i] - prev[i]
+    ops = max(total[0], 0)
+    per_op = max(ops, 1)
+    return {"ops": ops, "ops_rate": ops / seconds, "retrans": max(0, total[1] - ops), "timeouts": total[2],
+            "bytes": total[3] + total[4], "queue_ms": total[5] / per_op,
+            "rtt_ms": total[6] / per_op, "exec_ms": total[7] / per_op}
+
+
+def classify(states):
+    """Reduce (state, wchan) of every thread in the tree to what it's waiting on.
+
+    Being blocked wins over running: a single thread stuck on I/O is usually
+    what the rest are waiting for.
+    """
+    blocked = [wchan for state, wchan in states if state == "D"]
+    if any(w.startswith(NETWORK_WCHANS) for w in blocked):
+        return "network"
+    if blocked:
+        return "disk"
+    if any(state == "R" for state, _ in states):
+        return "cpu"
+    return "idle"
+
+
+def _thread_states(pid):
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return []
+    states = []
+    for tid in tids:
+        raw = _read(f"/proc/{pid}/task/{tid}/stat")
+        if raw is None:
+            continue
+        state = raw[raw.rfind(b")") + 2:raw.rfind(b")") + 3].decode()
+        wchan = (_read(f"/proc/{pid}/task/{tid}/wchan") or b"").decode(errors="replace")
+        states.append((state, wchan))
+    return states
 
 
 class _Proc:
@@ -93,6 +188,9 @@ class ProcessMonitor:
         self._prev = {}
         self._read_hist = deque(maxlen=HISTORY)
         self._write_hist = deque(maxlen=HISTORY)
+        self._waits = deque(maxlen=WAIT_WINDOW)
+        self._counters = deque(maxlen=WAIT_WINDOW)   # (time, nfs per-op snapshot, tcp counters)
+        self._rtt_hist = deque(maxlen=HISTORY)
         self.exclude_paths = tuple(exclude_paths)
 
     def _is_ours(self, proc, table):
@@ -131,6 +229,28 @@ class ProcessMonitor:
                     return arg
             return "backup"
         return engine
+
+    def _repository(self, pid):
+        argv = self._cmdline(pid)
+        for i, arg in enumerate(argv):
+            if arg in ("--repo", "-r") and i + 1 < len(argv):
+                return argv[i + 1]
+            if arg.startswith("--repo="):
+                return arg.split("=", 1)[1]
+        for var in (_read(f"/proc/{pid}/environ") or b"").split(b"\0"):
+            if var.startswith(b"RESTIC_REPOSITORY="):
+                return var.split(b"=", 1)[1].decode(errors="replace")
+        return None
+
+    @staticmethod
+    def _nfs_ops(repo):
+        """Per-op NFS counters of the mount holding a local repository path, if it's NFS."""
+        repo = os.path.realpath(repo)
+        mounts = parse_mountstats(_read("/proc/self/mountstats") or b"")
+        best = max((p for p in mounts if repo == p or repo.startswith(p.rstrip("/") + "/")), key=len, default=None)
+        if best is None or not mounts[best][0].startswith("nfs"):
+            return None
+        return mounts[best][1]
 
     def _open_file(self, pid):
         """Most interesting regular file the process has open (what it's reading)."""
@@ -172,6 +292,9 @@ class ProcessMonitor:
             self._prev.clear()
             self._read_hist.clear()
             self._write_hist.clear()
+            self._waits.clear()
+            self._counters.clear()
+            self._rtt_hist.clear()
             return None
 
         # Count the whole process tree (e.g. ssh or rclone spawned by restic).
@@ -211,6 +334,24 @@ class ProcessMonitor:
             self._write_hist.append(write_rate)
 
         main = min(engines, key=lambda pid: table[pid].start_ticks)
+        self._waits.append(classify([st for pid in pids for st in _thread_states(pid)]))
+        waits = {k: self._waits.count(k) / len(self._waits) for k in ("cpu", "disk", "network", "idle")}
+
+        # Only look at the transport the repository actually uses: NFS counters
+        # for a path on an NFS mount, TCP for anything that isn't a local disk.
+        repo = self._repository(main) if engines[main] == "restic" else None
+        nfs_ops = self._nfs_ops(repo) if repo and repo.startswith("/") else None
+        remote = nfs_ops is not None or bool(repo) and not repo.startswith("/")
+        self._counters.append((t, nfs_ops, _tcp_counters() if remote else None))
+        (old_t, old_nfs, old_tcp), (_, new_nfs, new_tcp) = self._counters[0], self._counters[-1]
+        nfs = None
+        if old_nfs is not None and new_nfs is not None and t > old_t:
+            nfs = nfs_summary(old_nfs, new_nfs, t - old_t)
+            self._rtt_hist.append(nfs["rtt_ms"])
+        tcp_retrans = None
+        if old_tcp and new_tcp and new_tcp[0] > old_tcp[0]:
+            tcp_retrans = (new_tcp[1] - old_tcp[1]) / (new_tcp[0] - old_tcp[0]) * 100
+
         current = None
         for pid in sorted(engines):
             current = self._open_file(pid) or current
@@ -229,6 +370,11 @@ class ProcessMonitor:
             read_total=read_total,
             write_total=write_total,
             current_file=current,
+            waits=waits,
+            io_pressure=_io_pressure(),
+            nfs=nfs,
+            tcp_retrans=tcp_retrans,
             read_history=self._read_hist,
             write_history=self._write_hist,
+            rtt_history=self._rtt_hist,
         )

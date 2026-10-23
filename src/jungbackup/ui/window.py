@@ -1,101 +1,33 @@
-"""The dashboard window."""
+"""The dashboard window: owns the state and flows, the sections render it."""
 
 import json
 import os
-import time
 from datetime import timedelta
 
-from gi.repository import Adw, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from ..backup.job import BackupJob
-from ..backup.monitor import NUM_CPUS, ProcessMonitor
+from ..backup.monitor import ProcessMonitor
 from ..backup.restic import Restic
 from ..core import keyring
 from ..core.paths import describe_path
 from ..core.settings import Settings
-from ..core.util import (
-    fmt_ago,
-    fmt_bytes,
-    fmt_bytes_short,
-    fmt_count,
-    fmt_date,
-    fmt_days,
-    fmt_duration,
-    fmt_duration_short,
-    fmt_rate,
-    fmt_until,
-    now,
-    parse_time,
-)
+from ..core.util import fmt_days, now, parse_time, snapshot_duration
 from ..dejadup.config import DejaDupConfig
 from ..dejadup.importer import import_from_deja_dup
 from ..dejadup.launch import open_deja_dup
 from ..storage import for_repository
-from .charts import BarChart, BreakdownBar, Sparkline, Swatch
+from .hero import Hero
+from .history import FilesBreakdown, HistoryCharts, SnapshotList, StatTiles
+from .live import LiveCard
 from .password import PasswordDialog
 from .prefs import PreferencesDialog
 from .setup import SetupDialog
+from .summary import SettingsSummary
+from .welcome import WelcomePage
 
 STATS_CACHE = os.path.join(GLib.get_user_cache_dir(), "jungbackup", "stats.json")
-HISTORY_BARS = 30
-SNAPSHOT_ROWS = 12
 SCHEDULER_INTERVAL = 60
-
-
-def _label(text="", css=(), xalign=0.0, **kw):
-    label = Gtk.Label(label=text, xalign=xalign, **kw)
-    for c in css:
-        label.add_css_class(c)
-    return label
-
-
-def _snapshot_duration(snap):
-    summary = snap.get("summary") or {}
-    start, end = parse_time(summary.get("backup_start")), parse_time(summary.get("backup_end"))
-    if start and end:
-        return (end - start).total_seconds()
-    return None
-
-
-class StatTile(Gtk.Box):
-    def __init__(self, title, icon):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self.add_css_class("card")
-        self.add_css_class("stat-tile")
-        head = Gtk.Box(spacing=6)
-        head.append(Gtk.Image(icon_name=icon, css_classes=["dim-label"]))
-        head.append(_label(title, ("caption-heading", "dim-label")))
-        self.append(head)
-        self._value = _label("—", ("stat-value",), ellipsize=Pango.EllipsizeMode.END)
-        self._sub = _label("", ("caption", "dim-label"), ellipsize=Pango.EllipsizeMode.END)
-        self.append(self._value)
-        self.append(self._sub)
-
-    def set(self, value, sub=""):
-        self._value.set_label(value)
-        self._sub.set_label(sub)
-        self.set_tooltip_text(f"{value}\n{sub}" if sub else value)
-
-
-class Metric(Gtk.Box):
-    """Small labelled value used in the live activity card."""
-
-    def __init__(self, title, sparkline_series=None):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
-        self.append(_label(title, ("caption-heading", "dim-label")))
-        self._value = _label("—", ("metric-value",))
-        self.append(self._value)
-        self.spark = None
-        if sparkline_series is not None:
-            self.spark = Sparkline(series=sparkline_series)
-            self.append(self.spark)
-        self._detail = _label("", ("caption", "dim-label", "numeric"), visible=False)
-        self.append(self._detail)
-
-    def set(self, text, detail=""):
-        self._value.set_label(text)
-        self._detail.set_label(detail)
-        self._detail.set_visible(bool(detail))
 
 
 class Window(Adw.ApplicationWindow):
@@ -127,7 +59,8 @@ class Window(Adw.ApplicationWindow):
         view.add_top_bar(self.banner)
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
-        self.stack.add_named(self._build_welcome(), "welcome")
+        self.welcome = WelcomePage(on_import=self.start_import, on_new=self.start_setup)
+        self.stack.add_named(self.welcome, "welcome")
         self.stack.add_named(self._build_dashboard(), "dashboard")
         view.set_content(self.stack)
 
@@ -139,6 +72,7 @@ class Window(Adw.ApplicationWindow):
         self.show_page()
 
     # Construction ------------------------------------------------------------
+
 
     def _build_header(self):
         header = Adw.HeaderBar()
@@ -165,25 +99,6 @@ class Window(Adw.ApplicationWindow):
             self.add_action(action)
         return header
 
-    def _build_welcome(self):
-        page = Adw.StatusPage(icon_name="io.jungblut.JungBackup", title="Back Up Your Files",
-                              description="Keep copies of your files safe on another drive or a network share, "
-                                          "and see at a glance how your backups are doing.")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER)
-        self.import_btn = Gtk.Button(css_classes=["pill", "suggested-action"])
-        self.import_btn.set_child(Adw.ButtonContent(icon_name="document-revert-symbolic",
-                                                    label="Import from Déjà Dup"))
-        self.import_btn.connect("clicked", lambda *_: self.start_import())
-        self.import_hint = _label("", ("caption", "dim-label"), xalign=0.5, wrap=True, max_width_chars=50,
-                                  justify=Gtk.Justification.CENTER)
-        new_btn = Gtk.Button(label="Set Up New Backup", css_classes=["pill"])
-        new_btn.connect("clicked", lambda *_: self.start_setup())
-        box.append(self.import_btn)
-        box.append(self.import_hint)
-        box.append(new_btn)
-        page.set_child(box)
-        return page
-
     def _build_dashboard(self):
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         clamp = Adw.Clamp(maximum_size=1100, tightening_threshold=800)
@@ -192,159 +107,28 @@ class Window(Adw.ApplicationWindow):
                       margin_top=18, margin_bottom=32, margin_start=16, margin_end=16)
         clamp.set_child(box)
 
-        box.append(self._build_hero())
-        self.live_revealer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN)
-        self.live_revealer.set_child(self._build_live())
-        box.append(self.live_revealer)
-
-        self.tiles = {}
-        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
-                           min_children_per_line=2, max_children_per_line=4,
-                           column_spacing=12, row_spacing=12)
-        for key, title, icon in (
-            ("size", "Backup Size", "drive-harddisk-symbolic"),
-            ("protected", "Protected Data", "security-high-symbolic"),
-            ("files", "Files", "folder-documents-symbolic"),
-            ("snapshots", "Snapshots", "document-open-recent-symbolic"),
-            ("age", "Last Backup", "object-select-symbolic"),
-            ("duration", "Last Duration", "preferences-system-time-symbolic"),
-            ("added", "Last Upload", "send-to-symbolic"),
-            ("free", "Free Space", "drive-harddisk-system-symbolic"),
-        ):
-            tile = StatTile(title, icon)
-            self.tiles[key] = tile
-            flow.append(tile)
-            tile.get_parent().set_focusable(False)
-        box.append(flow)
-
-        box.append(self._build_breakdown())
-
-        charts = Gtk.Box(spacing=12, homogeneous=True)
-        self.added_chart = BarChart(fmt_bytes_short)
-        self.duration_chart = BarChart(fmt_duration_short)
-        charts.append(self._chart_card("Data Added per Backup", self.added_chart))
-        charts.append(self._chart_card("Duration per Backup", self.duration_chart))
-        self.charts_box = charts
-        box.append(charts)
-
-        self.snap_group = Adw.PreferencesGroup(title="Recent Snapshots")
-        self._snap_rows = []
-        box.append(self.snap_group)
-
-        self.config_group = Adw.PreferencesGroup(title="Configuration")
-        edit = Gtk.Button(icon_name="document-edit-symbolic", tooltip_text="Edit", css_classes=["flat"])
-        edit.connect("clicked", lambda *_: self.edit_settings())
-        self.config_group.set_header_suffix(edit)
-        self.cfg_rows = {}
-        for key, title, icon in (("location", "Location", "folder-remote-symbolic"),
-                                 ("schedule", "Schedule", "alarm-symbolic"),
-                                 ("keep", "Keep", "document-open-recent-symbolic"),
-                                 ("includes", "Backing Up", "folder-symbolic"),
-                                 ("excludes", "Ignoring", "action-unavailable-symbolic"),
-                                 ("engine", "Engine", "applications-system-symbolic")):
-            row = Adw.ActionRow(title=title, subtitle_selectable=True)
-            row.add_prefix(Gtk.Image(icon_name=icon))
-            self.cfg_rows[key] = row
-            self.config_group.add(row)
-        box.append(self.config_group)
+        self.hero = Hero(on_backup=self.backup_now)
+        self.live = LiveCard(on_cancel=lambda: self.job and self.job.cancel())
+        self.tiles = StatTiles()
+        self.breakdown = FilesBreakdown()
+        self.charts = HistoryCharts()
+        self.snapshot_list = SnapshotList()
+        self.summary = SettingsSummary(on_edit=self.edit_settings)
+        for section in (self.hero, self.live, self.tiles, self.breakdown, self.charts,
+                        self.snapshot_list, self.summary):
+            box.append(section)
         return scroller
-
-    def _build_hero(self):
-        hero = Gtk.Box(spacing=18, css_classes=["card", "hero"])
-        self.hero_icon = Gtk.Image(pixel_size=48, valign=Gtk.Align.CENTER, css_classes=["hero-icon"])
-        hero.append(self.hero_icon)
-        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True, valign=Gtk.Align.CENTER)
-        self.hero_title = _label("", ("title-2",), wrap=True)
-        self.hero_sub = _label("", ("dim-label",), wrap=True)
-        self.hero_error = _label("", ("caption", "error"), wrap=True, visible=False, selectable=True)
-        text.append(self.hero_title)
-        text.append(self.hero_sub)
-        text.append(self.hero_error)
-        hero.append(text)
-        self.backup_btn = Gtk.Button(label="Back Up Now", valign=Gtk.Align.CENTER,
-                                     css_classes=["pill", "suggested-action"])
-        self.backup_btn.connect("clicked", lambda *_: self.backup_now())
-        hero.append(self.backup_btn)
-        return hero
-
-    def _build_live(self):
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, css_classes=["card", "live"])
-        top = Gtk.Box(spacing=12)
-        top.append(Adw.Spinner(width_request=20, height_request=20))
-        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        self.live_title = _label("", ("heading",))
-        self.live_sub = _label("", ("caption", "dim-label"), wrap=True)
-        titles.append(self.live_title)
-        titles.append(self.live_sub)
-        top.append(titles)
-        self.cancel_btn = Gtk.Button(label="Stop", valign=Gtk.Align.CENTER, css_classes=["pill"])
-        self.cancel_btn.connect("clicked", lambda *_: self.job and self.job.cancel())
-        top.append(self.cancel_btn)
-        card.append(top)
-
-        self.live_progress = Gtk.ProgressBar(show_text=False)
-        card.append(self.live_progress)
-        self.live_progress_text = _label("", ("caption", "numeric"))
-        card.append(self.live_progress_text)
-
-        grid = Gtk.Grid(column_spacing=24, row_spacing=12, column_homogeneous=True)
-        self.m_read = Metric("Reading", sparkline_series=0)
-        self.m_write = Metric("Writing to Backup", sparkline_series=1)
-        self.m_cpu = Metric("CPU")
-        self.m_mem = Metric("Memory")
-        self.m_elapsed = Metric("Elapsed")
-        self.m_eta = Metric("Remaining")
-        grid.attach(self.m_read, 0, 0, 2, 1)
-        grid.attach(self.m_write, 2, 0, 2, 1)
-        for i, m in enumerate((self.m_cpu, self.m_mem, self.m_elapsed, self.m_eta)):
-            grid.attach(m, i, 1, 1, 1)
-        card.append(grid)
-
-        self.live_files = _label("", ("caption", "monospace", "dim-label"),
-                                 ellipsize=Pango.EllipsizeMode.START, selectable=False)
-        card.append(self.live_files)
-        return card
-
-    def _build_breakdown(self):
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["card", "chart-card"])
-        head = Gtk.Box()
-        head.append(_label("Files in Last Backup", ("heading",), hexpand=True))
-        self.breakdown_total = _label("", ("dim-label", "numeric"))
-        head.append(self.breakdown_total)
-        card.append(head)
-        self.breakdown = BreakdownBar()
-        card.append(self.breakdown)
-        legend = Gtk.Box(spacing=18)
-        self.legend = {}
-        for i, (key, name) in enumerate((("new", "New"), ("changed", "Changed"), ("unmodified", "Unchanged"))):
-            item = Gtk.Box(spacing=6)
-            item.append(Swatch(i))
-            lbl = _label(name, ("caption", "numeric"))
-            item.append(lbl)
-            self.legend[key] = (lbl, name)
-            legend.append(item)
-        card.append(legend)
-        self.breakdown_dirs = _label("", ("caption", "dim-label"))
-        card.append(self.breakdown_dirs)
-        self.breakdown_card = card
-        return card
-
-    def _chart_card(self, title, chart):
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["card", "chart-card"])
-        card.append(_label(title, ("heading",)))
-        card.append(chart)
-        return card
 
     # Pages & flows -------------------------------------------------------------
 
     def show_page(self):
         if not self.settings.configured:
             result = import_from_deja_dup(self.dd)
-            self.import_btn.set_visible(result is not None)
+            where = None
             if result is not None:
                 s = result.settings
                 where = for_repository(s.repository).label if s.repository else "a location this app can't use yet"
-                self.import_hint.set_label(f"Found Déjà Dup backups in {where}")
+            self.welcome.offer_import(where)
             self.stack.set_visible_child_name("welcome")
             self.refresh_btn.set_visible(False)
             self.edit_btn.set_visible(False)
@@ -671,6 +455,7 @@ class Window(Adw.ApplicationWindow):
         self.banner.set_button_label(button)
         self.banner.set_revealed(True)
 
+
     def _render_all(self):
         if not self.settings.configured:
             return
@@ -690,235 +475,29 @@ class Window(Adw.ApplicationWindow):
         self._render_hero()
         self._render_live()
         self._render_tiles()
-        self._render_breakdown()
-        self._render_charts()
-        self._render_snapshots()
+        latest = self._latest()
+        self.breakdown.update(latest)
+        self.charts.update(self.snapshots)
+        self.snapshot_list.update(self.snapshots)
         self._render_config()
 
     def _latest(self):
         return self.snapshots[-1] if self.snapshots else None
 
     def _render_hero(self):
-        s = self.settings
-        last = s.last_backup_time
-        icon_classes = ("good", "warning", "error", "accent")
-        for c in icon_classes:
-            self.hero_icon.remove_css_class(c)
-
         running = self.job is not None or self.activity is not None
-        failed = s.last_error and (last is None or (parse_time(s.last_attempt) or last) > last)
-        overdue = s.periodic and s.next_backup_time and now() > s.next_backup_time + timedelta(days=1)
-        if running:
-            state, icon, title = "accent", "view-refresh-symbolic", "Backing Up…"
-        elif last is None:
-            state, icon, title = "error", "dialog-error-symbolic", "No Backups Yet"
-        elif failed:
-            state, icon, title = "warning", "dialog-warning-symbolic", "Last Backup Failed"
-        elif overdue:
-            state, icon, title = "warning", "dialog-warning-symbolic", "Backup Overdue"
-        else:
-            state, icon, title = "good", "object-select-symbolic", "Backups Are Up to Date"
-        self.hero_icon.set_from_icon_name(icon)
-        self.hero_icon.add_css_class(state)
-        self.hero_title.set_label(title)
-
-        parts = [f"Last backup {fmt_ago(last)}" if last else "Your files are not backed up yet"]
-        if s.periodic:
-            parts.append(f"next {fmt_until(s.next_backup_time)}" if last else "starting soon")
-        else:
-            parts.append("automatic backups are off")
-        self.hero_sub.set_label(" · ".join(parts))
-        self.hero_error.set_visible(bool(failed) and not running)
-        self.hero_error.set_label(s.last_error or "")
-        self.backup_btn.set_sensitive(not running and self.restic.available)
+        self.hero.update(self.settings, running, self.restic.available)
 
     def _render_live(self):
-        job, act = self.job, self.activity
-        if job is None and act is None:
-            self.live_revealer.set_reveal_child(False)
-            return
-        self.live_revealer.set_reveal_child(True)
-        self.cancel_btn.set_visible(job is not None)
-
-        if job is not None:
-            title = {"creating": "Creating Backup…", "backing-up": "Backing Up…",
-                     "cleaning-up": "Removing Old Backups…"}.get(job.phase, "Preparing…")
-            started = job.started
-            sub = f"Saving to {self.storage.label}"
-        else:
-            who = "Déjà Dup" if act.engine in ("restic", "duplicity") else act.engine
-            title = f"{who} is running {act.operation}"
-            started = act.started
-            sub = "Started outside this app"
-        self.live_title.set_label(title)
-        self.live_sub.set_label(sub)
-
-        status = job.status if job is not None and job.phase == "backing-up" else {}
-        elapsed = time.time() - started
-        self.m_elapsed.set(fmt_duration(elapsed))
-        if status:
-            frac = float(status.get("percent_done") or 0)
-            self.live_progress.set_fraction(min(frac, 1.0))
-            files_done, total_files = status.get("files_done", 0), status.get("total_files", 0)
-            self.live_progress_text.set_label(
-                f"{frac * 100:.0f}% · {fmt_bytes(status.get('bytes_done', 0))} of "
-                f"{fmt_bytes(status.get('total_bytes', 0))} · {fmt_count(files_done)} of {fmt_count(total_files)} files"
-                + (f" · {len(job.warnings)} skipped" if job.warnings else ""))
-            remaining = status.get("seconds_remaining")
-            self.m_eta.set(fmt_duration(remaining) if remaining else "estimating…")
-            current = status.get("current_files") or []
-            self.live_files.set_label("\n".join(describe_path(f) for f in current[:2]))
-        else:
-            # No progress feed: estimate from how long the previous backup took.
-            latest = self._latest()
-            typical = _snapshot_duration(latest) if latest else None
-            if typical and job is None and act and act.operation == "backup":
-                self.live_progress.set_fraction(min(elapsed / typical, 0.99))
-                self.live_progress_text.set_label(f"Estimated from the last backup, which took {fmt_duration(typical)}")
-                self.m_eta.set(f"~{fmt_duration(max(typical - elapsed, 0))}")
-            else:
-                self.live_progress.pulse()
-                self.live_progress_text.set_label("")
-                self.m_eta.set("—")
-            self.live_files.set_label(describe_path(act.current_file) if act and act.current_file else "")
-
-        if act is not None:
-            self.m_read.set(fmt_rate(act.read_rate))
-            self.m_write.set(fmt_rate(act.write_rate))
-            self.m_read.spark.set_values(act.read_history)
-            self.m_write.spark.set_values(act.write_history)
-            self.m_cpu.set(f"{act.cpu_percent:.0f}%", "Load " + " · ".join(f"{l:.2f}" for l in act.load))
-            self.m_cpu.set_tooltip_text(f"Share of all {NUM_CPUS} cores used by the backup.\n"
-                                        "System load average over 1, 5 and 15 minutes.")
-            self.m_mem.set(fmt_bytes(act.rss))
-            self.m_read.set_tooltip_text(f"{fmt_bytes(act.read_total)} read in total")
-            self.m_write.set_tooltip_text(f"{fmt_bytes(act.write_total)} written in total")
-        else:
-            for m in (self.m_read, self.m_write, self.m_cpu, self.m_mem):
-                m.set("—")
+        latest = self._latest()
+        self.live.update(self.job, self.activity, self.storage.label,
+                         snapshot_duration(latest) if latest else None)
 
     def _render_tiles(self):
-        t = self.tiles
-        snaps = self.snapshots or []
-        latest = self._latest()
-        summary = (latest or {}).get("summary") or {}
-        loading = "Loading…" if self._fetching else ""
-
-        raw = self.raw_stats or {}
-        if raw.get("total_size") is not None:
-            ratio = raw.get("compression_ratio")
-            t["size"].set(fmt_bytes(raw["total_size"]),
-                          f"{fmt_bytes(raw.get('total_uncompressed_size'))} before compression" if ratio else "")
-        else:
-            t["size"].set("—", loading or "Unlock to see")
-
-        if summary:
-            t["protected"].set(fmt_bytes(summary.get("total_bytes_processed")), "in the latest snapshot")
-            t["files"].set(fmt_count(summary.get("total_files_processed")),
-                           f"{fmt_count(summary.get('files_new', 0))} new, "
-                           f"{fmt_count(summary.get('files_changed', 0))} changed")
-            t["added"].set(fmt_bytes(summary.get("data_added_packed", summary.get("data_added"))),
-                           f"new data stored {fmt_ago(parse_time(summary.get('backup_end')))}")
-            durations = [d for d in (_snapshot_duration(s) for s in snaps[-10:]) if d]
-            avg = sum(durations) / len(durations) if durations else None
-            t["duration"].set(fmt_duration(_snapshot_duration(latest)),
-                              f"average {fmt_duration(avg)}" if avg else "")
-        else:
-            for key in ("protected", "files", "added", "duration"):
-                t[key].set("—", loading)
-
-        if snaps:
-            oldest = parse_time(snaps[0].get("time"))
-            t["snapshots"].set(fmt_count(len(snaps)), f"oldest from {fmt_date(oldest)}")
-        else:
-            t["snapshots"].set("—" if self.snapshots is None else "0", loading)
-
-        last = self.settings.last_backup_time
-        t["age"].set(fmt_ago(last).replace(" ago", "") if last else "Never",
-                     fmt_date(last) if last else "")
-
-        if self.fs_info and self.fs_info[0]:
-            size, free = self.fs_info
-            t["free"].set(fmt_bytes(free), f"{100 * free / size:.0f}% of {fmt_bytes(size)}")
-        else:
-            t["free"].set("—", "unknown for this location" if self.storage.reachable() else "location not available")
-
-    def _render_breakdown(self):
-        latest = self._latest()
-        summary = (latest or {}).get("summary") or {}
-        self.breakdown_card.set_visible(bool(summary))
-        if not summary:
-            return
-        values = {k: summary.get(f"files_{k}", 0) for k in ("new", "changed", "unmodified")}
-        self.breakdown.set_segments([
-            (values[k], i, f"{fmt_count(values[k])} {self.legend[k][1].lower()} files")
-            for i, k in enumerate(("new", "changed", "unmodified"))])
-        for key, (lbl, name) in self.legend.items():
-            lbl.set_label(f"{name} {fmt_count(values[key])}")
-        self.breakdown_total.set_label(f"{fmt_count(sum(values.values()))} files")
-        self.breakdown_dirs.set_label(
-            f"Folders: {fmt_count(summary.get('dirs_new', 0))} new · {fmt_count(summary.get('dirs_changed', 0))} "
-            f"changed · {fmt_count(summary.get('dirs_unmodified', 0))} unchanged")
-
-    def _render_charts(self):
-        snaps = [s for s in (self.snapshots or []) if s.get("summary")][-HISTORY_BARS:]
-        self.charts_box.set_visible(bool(snaps))
-        added, durations = [], []
-        for s in snaps:
-            summary = s["summary"]
-            t = parse_time(s.get("time"))
-            label = t.astimezone().strftime("%d %b") if t else ""
-            when = GLib.markup_escape_text(fmt_date(t))
-            data = summary.get("data_added_packed", summary.get("data_added", 0))
-            added.append((label, data, f"<b>{when}</b>\n{fmt_bytes(data)} added"))
-            d = _snapshot_duration(s) or 0
-            durations.append((label, d, f"<b>{when}</b>\nTook {fmt_duration(d)}"))
-        self.added_chart.set_items(added)
-        self.duration_chart.set_items(durations)
-
-    def _render_snapshots(self):
-        for row in self._snap_rows:
-            self.snap_group.remove(row)
-        self._snap_rows = []
-        snaps = self.snapshots or []
-        self.snap_group.set_visible(bool(snaps))
-        if not snaps:
-            return
-        host = GLib.get_host_name()
-        self.snap_group.set_description(f"{len(snaps)} snapshots in total")
-        for s in reversed(snaps[-SNAPSHOT_ROWS:]):
-            t = parse_time(s.get("time"))
-            summary = s.get("summary") or {}
-            bits = []
-            if summary:
-                bits.append(f"{fmt_bytes(summary.get('data_added_packed', summary.get('data_added')))} added")
-                bits.append(f"{fmt_count(summary.get('total_files_processed'))} files")
-                bits.append(f"took {fmt_duration(_snapshot_duration(s))}")
-            if s.get("hostname") and s["hostname"] != host:
-                bits.append(f"from {s['hostname']}")
-            row = Adw.ActionRow(title=GLib.markup_escape_text(fmt_date(t)),
-                                subtitle=GLib.markup_escape_text(" · ".join(bits)))
-            row.add_suffix(_label(s.get("short_id", s.get("id", "")[:8]), ("caption", "monospace", "dim-label")))
-            self.snap_group.add(row)
-            self._snap_rows.append(row)
+        self.tiles.update(self.snapshots, self.raw_stats, self.fs_info, self.settings.last_backup_time,
+                          self.storage, self._fetching)
 
     def _render_config(self):
-        if not self.settings.configured:
-            return False
-        s, r = self.settings, self.cfg_rows
-        esc = GLib.markup_escape_text
-        r["location"].set_subtitle(esc(self.storage.label))
-        r["schedule"].set_subtitle(("Daily" if s.period_days == 1 else f"Every {fmt_days(s.period_days)}")
-                                   if s.periodic else "Manual only")
-        r["keep"].set_subtitle("Forever" if s.keep_days == 0 else f"At least {fmt_days(s.keep_days)}")
-        r["includes"].set_subtitle(esc(", ".join(describe_path(p) for p in s.includes) or "Nothing"))
-        r["excludes"].set_subtitle(esc(", ".join(describe_path(p) for p in s.excludes) or "Nothing"))
-        latest = self._latest()
-        engine = (latest or {}).get("program_version") or "restic"
-        extra = []
-        if not s.encrypted:
-            extra.append("not encrypted")
-        if self.dd.available:
-            extra.append("Déjà Dup schedule " + ("on" if self.dd.periodic else "off"))
-        r["engine"].set_subtitle(esc(" · ".join([engine] + extra)))
+        if self.settings.configured:
+            self.summary.update(self.settings, self.storage, self._latest(), self.dd)
         return False

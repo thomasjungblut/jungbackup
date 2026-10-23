@@ -169,12 +169,12 @@ class DejaDupConfig:
 
     @property
     def last_backup(self):
-        from .util import parse_time
+        from ..core.util import parse_time
         return parse_time(self.get("last-backup"))
 
     @property
     def last_run(self):
-        from .util import parse_time
+        from ..core.util import parse_time
         return parse_time(self.get("last-run"))
 
     @property

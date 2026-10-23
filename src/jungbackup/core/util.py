@@ -25,6 +25,15 @@ def parse_time(value):
     return dt
 
 
+def snapshot_duration(snap):
+    """Seconds a restic snapshot took to create, from its summary."""
+    summary = snap.get("summary") or {}
+    start, end = parse_time(summary.get("backup_start")), parse_time(summary.get("backup_end"))
+    if start and end:
+        return (end - start).total_seconds()
+    return None
+
+
 def fmt_bytes(n):
     if n is None:
         return "—"

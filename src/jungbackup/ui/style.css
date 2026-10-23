@@ -27,3 +27,6 @@
   font-weight: 600;
   font-feature-settings: "tnum";
 }
+
+.wait-note { color: alpha(currentColor, 0.7); }
+.wait-note.warning { color: var(--warning-color); }
