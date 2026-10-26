@@ -30,3 +30,10 @@
 
 .wait-note { color: alpha(currentColor, 0.7); }
 .wait-note.warning { color: var(--warning-color); }
+
+.path-bar button { font-weight: normal; }
+.path-bar button.current { font-weight: bold; }
+
+.timeline {
+  padding: 12px 16px 6px;
+}

@@ -1,4 +1,4 @@
-"""The (re-)configure dialog behind the dashboard's edit button."""
+"""The Settings view: schedule, location, folders, performance and Déjà Dup."""
 
 from gi.repository import Adw, GLib, Gtk
 
@@ -20,14 +20,23 @@ def _choices(values, current, label):
     return values, Gtk.StringList.new([label(v) for v in values])
 
 
-class PreferencesDialog(Adw.PreferencesDialog):
-    def __init__(self, settings, dd, on_changed, on_change_location, on_forget_password):
-        super().__init__(title="Backup Settings", search_enabled=False)
-        self._settings = settings
-        self._on_changed = on_changed
+class SettingsPage(Adw.Bin):
+    """Built from the current settings by load(), which the window calls whenever it's shown or they change."""
 
+    def __init__(self, dd, on_changed, on_change_location, on_forget_password, toast):
+        super().__init__()
+        self._dd = dd
+        self._on_changed = on_changed
+        self._on_change_location = on_change_location
+        self._on_forget_password = on_forget_password
+        self._toast = toast
+        self._settings = None
+
+    def load(self, settings):
+        self._settings = settings
+        dd, on_change_location, on_forget_password = self._dd, self._on_change_location, self._on_forget_password
         page = Adw.PreferencesPage()
-        self.add(page)
+        self.set_child(page)
 
         # Schedule ---------------------------------------------------------
         schedule = Adw.PreferencesGroup(title="Schedule")
@@ -60,7 +69,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
                             subtitle_selectable=True)
         row.add_prefix(Gtk.Image(icon_name=storage.icon))
         change = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
-        change.connect("clicked", lambda *_: (self.close(), on_change_location()))
+        change.connect("clicked", lambda *_: on_change_location())
         row.add_suffix(change)
         location.add(row)
 
@@ -104,8 +113,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
             page.add(pw)
             forget = Adw.ButtonRow(title="Forget Saved Password")
             forget.add_css_class("destructive-action")
-            forget.connect("activated", lambda *_: (on_forget_password(),
-                                                    self.add_toast(Adw.Toast(title="Password forgotten"))))
+            forget.connect("activated", lambda *_: (on_forget_password(), self._toast("Password forgotten")))
             pw.add(forget)
 
         # Déjà Dup coexistence ---------------------------------------------

@@ -12,20 +12,18 @@ from gi.repository import GLib
 
 from ..core.paths import expand_path
 from ..storage import EXISTING, NEW, OCCUPIED, for_repository
-from .restic import EXIT_INCOMPLETE, EXIT_LOCKED
+from .restic import EXIT_INCOMPLETE, EXIT_LOCKED, pattern_literal
 
 EXCLUDE, INCLUDE = 0, 1
 
 
 def _literal(path):
-    """Quote a path so restic matches it literally.
+    """Quote a path so restic's backup matches it literally.
 
-    Patterns use Go's filepath.Match syntax, where \\ * ? [ are special, and
-    restic expands environment variables, so a literal $ is written as $$.
+    On top of the glob characters, backup expands environment variables in
+    exclude patterns, so a literal $ is written as $$.
     """
-    for special in ("\\", "*", "?", "["):
-        path = path.replace(special, "\\" + special)
-    return path.replace("$", "$$")
+    return pattern_literal(path).replace("$", "$$")
 
 
 def _absolute_paths(entries):

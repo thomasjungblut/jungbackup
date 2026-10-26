@@ -1,7 +1,7 @@
 """End to end with the real restic, for every storage backend.
 
 Each test gets a fresh, empty repository location; the flow mirrors the app:
-probe → init → back up → list snapshots → back up again.
+probe → init → back up → list snapshots → back up again, then browse and restore.
 """
 
 import socket
@@ -12,6 +12,7 @@ import pytest
 
 from conftest import PASSWORD, wait_for
 from jungbackup.backup.job import BackupJob
+from jungbackup.backup.restore import RestoreJob, plan_copy, plan_in_place
 from jungbackup.core.settings import Settings
 from jungbackup.storage import EXISTING, NEW, UNREACHABLE, SftpStorage, for_repository, sftp
 
@@ -110,3 +111,52 @@ def test_sftp_closed_port_is_explained(restic, sftp_server):
     state, message = _probe(storage, restic)
     assert state == UNREACHABLE
     assert "Couldn't connect to 127.0.0.1" in message
+
+
+def _ls(restic, storage, snapshot, path):
+    return wait_for(lambda done: restic.ls(storage.repo, PASSWORD, snapshot, path, done))
+
+
+def _restore(restic, storage, snapshot, steps):
+    def start(done):
+        RestoreJob(restic, storage.repo, PASSWORD, snapshot, steps, lambda job: None, done).start()
+    return wait_for(start, timeout=180)
+
+
+def test_browse_and_restore(restic, storage, source):
+    (source / "docs" / "we$ird [1].pdf").write_text("pdf\n")
+    settings = Settings(repository=storage.repo, includes=[str(source)], excludes=[])
+    assert _backup(restic, settings)[1]
+    (snapshot,), _ = _snapshots(restic, storage)
+    sid = snapshot["id"]
+
+    nodes, error = _ls(restic, storage, sid, str(source))
+    assert error is None
+    assert sorted((n["name"], n["type"]) for n in nodes) == [("b.bin", "file"), ("docs", "dir")]
+    assert _ls(restic, storage, sid, str(source / "nope")) == (None, None)
+
+    # In place: a changed file is put back, a deleted folder comes back, unrelated files stay.
+    (source / "b.bin").write_text("changed")
+    (source / "docs" / "a.txt").unlink()
+    (source / "docs" / "we$ird [1].pdf").unlink()
+    (source / "docs").rmdir()
+    (source / "new.txt").write_text("keep me")
+    job, ok, error = _restore(restic, storage, sid, plan_in_place([str(source / "b.bin"), str(source / "docs")]))
+    assert (ok, error, job.warnings) == (True, None, [])
+    assert len((source / "b.bin").read_bytes()) == 64 * 1024
+    assert (source / "docs" / "a.txt").read_text() == "hello\n"
+    assert (source / "new.txt").read_text() == "keep me"
+
+    # A copy elsewhere, under the item's own name.
+    out = source.parent / "out"
+    out.mkdir()
+    pdf = source / "docs" / "we$ird [1].pdf"
+    _job, ok, error = _restore(restic, storage, sid, plan_copy([str(pdf), str(source / "docs")], str(out)))
+    assert ok, error
+    assert (out / pdf.name).read_text() == "pdf\n"
+    assert (out / "docs" / "a.txt").read_text() == "hello\n"
+
+    # A single file straight to a chosen name.
+    target = out / "saved.pdf"
+    _data, error = wait_for(lambda done: restic.dump(storage.repo, PASSWORD, sid, str(pdf), str(target), done))
+    assert error is None and target.read_text() == "pdf\n"

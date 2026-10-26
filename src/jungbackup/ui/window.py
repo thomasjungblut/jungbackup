@@ -4,7 +4,7 @@ import json
 import os
 from datetime import timedelta
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
 from ..backup.job import BackupJob
 from ..backup.monitor import ProcessMonitor
@@ -21,7 +21,8 @@ from .hero import Hero
 from .history import FilesBreakdown, HistoryCharts, SnapshotList, StatTiles
 from .live import LiveCard
 from .password import PasswordDialog
-from .prefs import PreferencesDialog
+from .prefs import SettingsPage
+from .restore import RestorePage
 from .setup import SetupDialog
 from .summary import SettingsSummary
 from .welcome import WelcomePage
@@ -51,18 +52,18 @@ class Window(Adw.ApplicationWindow):
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
-        view = Adw.ToolbarView()
-        self.toasts.set_child(view)
-        view.add_top_bar(self._build_header())
-        self.banner = Adw.Banner()
-        self.banner.connect("button-clicked", lambda *_: self._banner_action())
-        view.add_top_bar(self.banner)
-
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        self.toasts.set_child(self.stack)
+        self._build_actions()
+
+        welcome = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.pack_end(self._menu_button())
+        welcome.add_top_bar(header)
         self.welcome = WelcomePage(on_import=self.start_import, on_new=self.start_setup)
-        self.stack.add_named(self.welcome, "welcome")
-        self.stack.add_named(self._build_dashboard(), "dashboard")
-        view.set_content(self.stack)
+        welcome.set_content(self.welcome)
+        self.stack.add_named(welcome, "welcome")
+        self.stack.add_named(self._build_main(), "main")
 
         self._load_stats_cache()
         GLib.timeout_add_seconds(1, self._tick)
@@ -74,30 +75,104 @@ class Window(Adw.ApplicationWindow):
     # Construction ------------------------------------------------------------
 
 
-    def _build_header(self):
-        header = Adw.HeaderBar()
-        self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh Statistics")
-        self.refresh_btn.connect("clicked", lambda *_: self.refresh())
-        header.pack_start(self.refresh_btn)
-
-        menu = Gio.Menu()
-        menu.append("Re-Import from Déjà Dup…", "win.reimport")
-        menu.append("Open Déjà Dup", "win.open-deja-dup")
-        menu.append("About Jung Backup", "app.about")
-        menu.append("Quit", "app.quit")
-        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Main Menu")
-        header.pack_end(menu_btn)
-
-        self.edit_btn = Gtk.Button(icon_name="document-edit-symbolic", tooltip_text="Edit Backup Settings")
-        self.edit_btn.connect("clicked", lambda *_: self.edit_settings())
-        header.pack_end(self.edit_btn)
-
+    def _build_actions(self):
         for name, cb in (("reimport", lambda *_: self.start_import()),
                          ("open-deja-dup", lambda *_: open_deja_dup())):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", cb)
             self.add_action(action)
+        show = Gio.SimpleAction.new("show-page", GLib.VariantType.new("s"))
+        show.connect("activate", lambda _a, name: self.pages.set_visible_child_name(name.get_string()))
+        self.add_action(show)
+
+    def _menu_button(self):
+        menu = Gio.Menu()
+        for items in ((("Home", "win.show-page::backup"),
+                       ("Restore Files", "win.show-page::restore"),
+                       ("Backup Settings", "win.show-page::settings")),
+                      (("Re-Import from Déjà Dup…", "win.reimport"),
+                       ("Open Déjà Dup", "win.open-deja-dup")),
+                      (("About Jung Backup", "app.about"),
+                       ("Quit", "app.quit"))):
+            section = Gio.Menu()
+            for title, action in items:
+                section.append(title, action)
+            menu.append_section(None, section)
+        return Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Main Menu",
+                              primary=True)
+
+    def _build_main(self):
+        """A hidden-by-default sidebar with the Backup and Restore views, which share the header bar and banner."""
+        self.pages = Adw.ViewStack()
+        self.restore = RestorePage(self.restic, self.toasts, on_unlock=self.ask_password,
+                                   on_retry=self.refresh)
+        self.pages.add_titled_with_icon(self._build_dashboard(), "backup", "Backup",
+                                        "io.jungblut.JungBackup-symbolic")
+        self.pages.add_titled_with_icon(self.restore, "restore", "Restore", "document-revert-symbolic")
+        self.settings_page = SettingsPage(self.dd, on_changed=self._on_settings_changed,
+                                          on_change_location=lambda: self.start_setup("Change Location"),
+                                          on_forget_password=self._forget_password, toast=self.toast)
+        self.pages.add_titled_with_icon(self.settings_page, "settings", "Settings", "emblem-system-symbolic")
+
+        sidebar = Adw.ToolbarView()
+        sidebar.add_top_bar(Adw.HeaderBar(title_widget=Adw.WindowTitle(title="Jung Backup")))
+        switcher = Adw.ViewSwitcherSidebar(stack=self.pages)
+        # On narrow windows the sidebar covers the content; picking a view (even the current one) closes it.
+        switcher.connect("activated", lambda *_: self.split.get_collapsed() and self.split.set_show_sidebar(False))
+        sidebar.set_content(switcher)
+
+        content = Adw.ToolbarView()
+        content.add_top_bar(self._build_header())
+        self.banner = Adw.Banner()
+        self.banner.connect("button-clicked", lambda *_: self._banner_action())
+        content.add_top_bar(self.banner)
+        content.set_content(self.pages)
+
+        self.split = Adw.OverlaySplitView(sidebar=sidebar, content=content, show_sidebar=False)
+        self.sidebar_btn.bind_property("active", self.split, "show-sidebar",
+                                       GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
+        toggle = Gio.SimpleAction.new("toggle-sidebar", None)
+        toggle.connect("activate", lambda *_: self.split.set_show_sidebar(not self.split.get_show_sidebar()))
+        self.add_action(toggle)
+        self.get_application().set_accels_for_action("win.toggle-sidebar", ["F9"])
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 640sp"))
+        narrow.add_setter(self.split, "collapsed", True)
+        narrow.add_setter(self.restore.modified_column, "visible", False)
+        self.add_breakpoint(narrow)
+        self.pages.connect("notify::visible-child", lambda *_: self._page_changed())
+        self._page_changed()
+        return self.split
+
+    def _build_header(self):
+        self.title = Adw.WindowTitle()
+        header = Adw.HeaderBar(title_widget=self.title)
+        self.sidebar_btn = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", tooltip_text="Show Sidebar (F9)")
+        header.pack_start(self.sidebar_btn)
+        header.pack_end(self._menu_button())
+        self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh Statistics")
+        self.refresh_btn.connect("clicked", lambda *_: self.refresh())
+        self.edit_btn = Gtk.Button(icon_name="document-edit-symbolic", tooltip_text="Edit Backup Settings")
+        self.edit_btn.connect("clicked", lambda *_: self.edit_settings())
+        self._page_buttons = {"backup": [self.refresh_btn, self.edit_btn],
+                              "restore": self.restore.header_start + self.restore.header_end}
+        header.pack_start(self.refresh_btn)
+        for button in self.restore.header_start:
+            header.pack_start(button)
+        for button in reversed(self.restore.header_end):
+            header.pack_end(button)
+        header.pack_end(self.edit_btn)
         return header
+
+    def _page_changed(self):
+        name = self.pages.get_visible_child_name()
+        self.title.set_title(self.pages.get_page(self.pages.get_visible_child()).get_title())
+        for page, buttons in self._page_buttons.items():
+            for button in buttons:
+                button.set_visible(page == name)
+        if name == "restore":
+            self.restore.shown()
+        elif name == "settings" and self.settings.configured:
+            self.settings_page.load(self.settings)
 
     def _build_dashboard(self):
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -130,14 +205,13 @@ class Window(Adw.ApplicationWindow):
                 where = for_repository(s.repository).label if s.repository else "a location this app can't use yet"
             self.welcome.offer_import(where)
             self.stack.set_visible_child_name("welcome")
-            self.refresh_btn.set_visible(False)
-            self.edit_btn.set_visible(False)
+            self.lookup_action("show-page").set_enabled(False)
             self.banner.set_revealed(False)
             return
-        self.stack.set_visible_child_name("dashboard")
+        self.stack.set_visible_child_name("main")
+        self.lookup_action("show-page").set_enabled(True)
+        self.settings_page.load(self.settings)   # a new location or import replaces the settings
         self._sync_autostart()
-        self.refresh_btn.set_visible(True)
-        self.edit_btn.set_visible(True)
         self._render_all()
         self.unlock_and_refresh()
 
@@ -215,11 +289,8 @@ class Window(Adw.ApplicationWindow):
         self.show_page()
 
     def edit_settings(self):
-        if not self.settings.configured:
-            return
-        PreferencesDialog(self.settings, self.dd, on_changed=self._on_settings_changed,
-                          on_change_location=lambda: self.start_setup("Change Location"),
-                          on_forget_password=self._forget_password).present(self)
+        if self.settings.configured:
+            self.pages.set_visible_child_name("settings")
 
     def _on_settings_changed(self):
         self._sync_autostart()
@@ -404,6 +475,9 @@ class Window(Adw.ApplicationWindow):
         return GLib.SOURCE_CONTINUE
 
     def _on_close(self, _win):
+        if self.restore.busy:
+            self.restore.confirm_stop(then=self.close)
+            return True
         if self.job is not None or (self.settings.configured and self.settings.periodic):
             # Keep running in the background for the schedule / the running job.
             self.set_visible(False)
@@ -479,6 +553,8 @@ class Window(Adw.ApplicationWindow):
         self.breakdown.update(latest)
         self.charts.update(self.snapshots)
         self.snapshot_list.update(self.snapshots)
+        self.restore.set_backup(self.settings.repository, self.password, self.storage.explain)
+        self.restore.set_snapshots(self.snapshots, self.stats_error if self.snapshots is None else None)
         self._render_config()
 
     def _latest(self):

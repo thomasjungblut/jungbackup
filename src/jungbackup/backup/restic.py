@@ -23,6 +23,13 @@ EXIT_WRONG_PASSWORD = 12
 EXIT_INCOMPLETE = 3      # backup finished, but some files could not be read
 
 
+def pattern_literal(path):
+    """Quote a path for restic's --include/--exclude, which use Go's filepath.Match syntax."""
+    for special in ("\\", "*", "?", "["):
+        path = path.replace(special, "\\" + special)
+    return path
+
+
 class ResticError(Exception):
     def __init__(self, message, code=None, details=""):
         super().__init__(message)
@@ -94,8 +101,12 @@ class Restic:
 
     # Quick queries -----------------------------------------------------------
 
-    def run_json(self, repo, password, args, callback, cancellable=None):
-        """Run `restic <args> --json` and call callback(data, error) on the main loop."""
+    def run_json(self, repo, password, args, callback, cancellable=None, lines=False):
+        """Run `restic <args> --json` and call callback(data, error) on the main loop.
+
+        With lines=True the output is one JSON object per line (as from `ls`)
+        and data is the list of them.
+        """
         argv = self._argv(repo, password, ["--no-lock", "--quiet"] + list(args))
         launcher = self._launcher(Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE
                                   | Gio.SubprocessFlags.STDERR_PIPE)
@@ -117,7 +128,10 @@ class Restic:
                 callback(None, ResticError(_last_error(err, status), status, err or ""))
                 return
             try:
-                callback(json.loads(out) if out.strip() else None, None)
+                if lines:
+                    callback([json.loads(line) for line in out.splitlines() if line.strip()], None)
+                else:
+                    callback(json.loads(out) if out.strip() else None, None)
             except ValueError as e:
                 callback(None, ResticError(f"Unexpected output from restic: {e}"))
 
@@ -130,6 +144,24 @@ class Restic:
 
     def raw_stats(self, repo, password, callback, cancellable=None):
         self.run_json(repo, password, ["stats", "--mode", "raw-data"], callback, cancellable)
+
+    def ls(self, repo, password, snapshot, path, callback, cancellable=None):
+        """Call callback(nodes, error) with what's directly inside `path`, or nodes=None if it isn't there."""
+        def done(data, error):
+            if error is not None:
+                callback(None, error)
+                return
+            nodes = [n for n in data if n.get("struct_type", n.get("message_type")) == "node"]
+            # restic lists the folder itself too; without it, the path isn't in the snapshot.
+            if path != "/" and not any(n.get("path") == path for n in nodes):
+                callback(None, None)
+                return
+            callback([n for n in nodes if n.get("path") != path], None)
+        self.run_json(repo, password, ["ls", snapshot, path], done, cancellable, lines=True)
+
+    def dump(self, repo, password, snapshot, path, target, callback, cancellable=None):
+        """Write one file from a snapshot to `target`; callback(None, error)."""
+        self.run_json(repo, password, ["dump", f"--target={target}", snapshot, path], callback, cancellable)
 
     def init(self, repo, password, callback):
         self.run_json(repo, password, ["init", "--repository-version=2"], callback)

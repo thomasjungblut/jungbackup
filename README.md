@@ -2,8 +2,8 @@
 
 A GNOME backup app built around a dashboard: how big the backup is, how old it
 is, how long the last run took, how many files changed, and live throughput,
-CPU and memory use while a backup runs. Configuration sits behind an edit
-button, out of the way.
+CPU and memory use while a backup runs. Restoring files and the settings are
+views of their own, out of the way until you need them.
 
 It runs its own [restic](https://restic.net) backups and stays compatible with
 Déjà Dup: snapshots use the same tag (`deja-dup`), host grouping and retention
@@ -18,6 +18,23 @@ flags, so either app can restore or prune the other's backups.
   app offers to switch off Déjà Dup's schedule so the two don't both back up.
 * **Set up new backup**: choose a folder (local disk, USB drive or a mounted
   network share) or an SFTP server, pick a password, done.
+
+## Restoring files
+
+The sidebar (hidden until you open it with the button at the top left, or F9)
+switches between **Backup** (the dashboard), **Restore** and **Settings**; the
+main menu and the edit buttons lead to the last two as well. In Restore, pick
+a snapshot on the timeline (click it, use the arrow buttons, or ←/→ once it
+has focus) and browse its files; switching snapshots keeps you in
+the same folder, so you can step back until the lost file shows up. Tick files
+and folders, in as many folders as you like, then:
+
+* **Restore** puts them back where they were, replacing what's there now.
+  Files that weren't in the backup are left alone, and folders that are gone
+  come back with their original permissions.
+* **Save Copy…** leaves the original location untouched: a single file goes
+  wherever you save it (handy for one PDF you deleted), anything else is copied
+  into a folder you pick, each item under its own name.
 
 ## Storage
 
@@ -70,8 +87,8 @@ Under `src/jungbackup/`:
 | Package | Purpose |
 |---|---|
 | `app.py` | `Adw.Application`, autostart portal |
-| `ui/` | Dashboard and scheduler (`window.py`), setup flow, password prompt, settings dialog, Cairo charts |
-| `backup/` | Running restic (`restic.py`; password via stdin), the backup job (`job.py`: init → backup → forget/prune, Déjà Dup-compatible flags), `/proc` sampling of running restic/duplicity (`monitor.py`) |
+| `ui/` | Dashboard and scheduler (`window.py`), restore view (`restore.py`, snapshot `timeline.py`), settings view (`prefs.py`), setup flow, password prompt, Cairo charts |
+| `backup/` | Running restic (`restic.py`; password via stdin), the backup job (`job.py`: init → backup → forget/prune, Déjà Dup-compatible flags), restoring (`restore.py`), `/proc` sampling of running restic/duplicity (`monitor.py`) |
 | `storage/` | Storage backends: `local.py`, `sftp.py`, the shared interface in `base.py` |
 | `dejadup/` | Reading/writing Déjà Dup's GSettings / Flatpak keyfile, importing its settings, launching it |
 | `core/` | This app's settings, keyring, `$HOME`-style path tokens, formatting helpers |
