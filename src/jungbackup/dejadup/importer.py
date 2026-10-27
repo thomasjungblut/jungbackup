@@ -32,6 +32,8 @@ def import_from_deja_dup(dd):
     elif loc.backend == "local":
         s.repository = loc.label
         notes.append("The backup folder isn't reachable right now; mount it before the next backup.")
+    elif loc.backend == "google":
+        notes.append(loc.problem)
     else:
         notes.append(f"{loc.label} can't be used yet — choose a folder for your backups.")
     tool = dd.detect_tool(loc)

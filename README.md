@@ -17,7 +17,8 @@ flags, so either app can restore or prune the other's backups.
   sandboxed keyring, so you type it once and it's stored in your keyring. The
   app offers to switch off Déjà Dup's schedule so the two don't both back up.
 * **Set up new backup**: choose a folder (local disk, USB drive or a mounted
-  network share) or an SFTP server, pick a password, done.
+  network share), an SFTP server, Google Drive or an rclone remote, pick a
+  password, done.
 
 ## Restoring files
 
@@ -42,6 +43,8 @@ and folders, in as many folders as you like, then:
 |---|---|---|
 | Folder | `/run/media/me/disk/backup` | Local disks, USB drives, mounted NFS/SMB/GVfs shares |
 | SFTP server | `sftp:user@host:path`, `sftp://user@host:port//abs/path` | restic's own SFTP backend via `ssh` |
+| Google Drive | `rclone:jungbackupgdrive:<hostname>` | restic's rclone backend; sign in through the browser |
+| Rclone remote | `rclone:onedrive:<hostname>` | Any remote from your own `rclone config` |
 
 SFTP uses your SSH keys, agent and `~/.ssh/config` (a `Host` alias works as
 the server name). There's no terminal for a password prompt, so the server must
@@ -49,6 +52,28 @@ accept key logins; ssh runs with `BatchMode=yes` and trusts a server's key on
 first contact (`StrictHostKeyChecking=accept-new`). A Déjà Dup "Network
 server" location with an `sftp://` address is imported as SFTP directly, no
 mount needed.
+
+Google Drive: **Sign In…** opens Google's sign-in page in your own browser,
+where you're probably logged in already; no embedded browser. The app runs
+`rclone authorize drive`, which waits for Google's redirect on `127.0.0.1` and
+hands back the token, using rclone's built-in OAuth client, so there's nothing
+to register with Google (its consent screen names rclone). The token goes into
+your keyring. restic has no Drive backend of its own, so it starts
+`rclone serve restic`; the remote is described to rclone by `RCLONE_CONFIG_*`
+variables in restic's environment, with `RCLONE_CONFIG=/dev/null`, so nothing
+lands in an rclone config file. The app asks only for `drive.file` access: it
+sees the files it created and nothing else in your Drive. For the same reason
+it can't open Déjà Dup's Google Drive backups.
+
+An **Rclone remote** reaches every other service rclone supports (OneDrive,
+Dropbox, WebDAV, S3, pCloud, …): set the remote up with `rclone config`, then
+enter its name and a folder. The app uses your `rclone.conf` as it is (inside the
+Flatpak, the one in `~/.config/rclone`); an encrypted config isn't supported, as
+there's no terminal to type its password into. A Déjà Dup "Rclone" location is
+imported as one directly.
+
+rclone comes with the Flatpak; elsewhere it's `$JUNGBACKUP_RCLONE` or `rclone`
+on `PATH`.
 
 Each backend is a module in `storage/` implementing `storage.base.Storage`.
 
@@ -63,7 +88,7 @@ make setup    # uv venv --python /usr/bin/python3 --system-site-packages && uv s
 make run      # uv run jungbackup
 make check    # ruff + desktop file and metainfo validation
 make unit-test         # fast, no restic or podman needed
-make integration-test  # real restic, local folder + SFTP container
+make integration-test  # real restic, local folder, rclone + SFTP container
 make test              # both, one after the other
 ```
 

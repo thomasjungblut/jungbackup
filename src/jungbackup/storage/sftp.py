@@ -57,6 +57,8 @@ class SftpStorage(Storage):
         ("port", "Port", "Optional; defaults to 22"),
         ("path", "Folder on Server", "Relative to your home folder there, or absolute like /srv/backups"),
     )
+    HINT = ("restic connects with ssh, using your SSH keys, agent and ~/.ssh/config. "
+            "The server has to accept key logins.")
 
     @classmethod
     def handles(cls, repo):

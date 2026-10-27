@@ -214,8 +214,8 @@ class BackupJob:
 
     def _forget(self):
         host = GLib.get_host_name()
-        args = ["forget", *tuning_args(self._settings), f"--host={host}", "--tag=deja-dup", "--group-by=host,tags", "--prune",
-                f"--keep-within={self._settings.keep_days}d"]
+        args = ["forget", *tuning_args(self._settings), f"--host={host}", "--tag=deja-dup", "--group-by=host,tags",
+                "--prune", f"--keep-within={self._settings.keep_days}d"]
         self._set_phase("cleaning-up")
         try:
             self._job = self._restic.stream(self._settings.repository, self._password, args,

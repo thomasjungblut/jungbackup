@@ -14,15 +14,18 @@ from conftest import PASSWORD, wait_for
 from jungbackup.backup.job import BackupJob
 from jungbackup.backup.restore import RestoreJob, plan_copy, plan_in_place
 from jungbackup.core.settings import Settings
-from jungbackup.storage import EXISTING, NEW, UNREACHABLE, SftpStorage, for_repository, sftp
+from jungbackup.storage import EXISTING, NEW, UNREACHABLE, RcloneStorage, SftpStorage, for_repository, sftp
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(params=["local", "sftp-relative", "sftp-absolute"])
+@pytest.fixture(params=["local", "sftp-relative", "sftp-absolute", "rclone"])
 def storage(request, tmp_path):
     if request.param == "local":
         return for_repository(str(tmp_path / "repo"))
+    if request.param == "rclone":
+        remote = request.getfixturevalue("rclone_remote")
+        return RcloneStorage.from_fields({"remote": remote, "path": str(tmp_path / "repo")})
     server = request.getfixturevalue("sftp_server")
     # The container listens on a random port, so these use restic's URL form.
     # A relative path lands in the user's home folder (/config in the container).

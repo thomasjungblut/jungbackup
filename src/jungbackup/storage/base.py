@@ -19,6 +19,8 @@ class Storage:
     # Entry rows the setup dialog shows: (key, title, hint). Empty for
     # backends with their own picker (local folders).
     FIELDS = ()
+    HINT = ""                # shown under the entry rows
+    ACCOUNT = False          # True when the setup dialog should offer to sign in
 
     def __init__(self, repo):
         self.repo = repo
@@ -32,6 +34,11 @@ class Storage:
         """Build from the setup dialog's entries; None while they're incomplete."""
         return None
 
+    @classmethod
+    def default_fields(cls):
+        """What the setup dialog's entries start with for a new location."""
+        return {}
+
     def fields(self):
         return {}
 
@@ -42,6 +49,10 @@ class Storage:
     def restic_options(self):
         """Extra global flags for every restic call on this repository."""
         return []
+
+    def restic_env(self):
+        """Extra environment variables for every restic call on this repository."""
+        return {}
 
     def reachable(self):
         """Cheap check whether starting restic is worth it. True when it can't be told without connecting."""

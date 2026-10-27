@@ -1,8 +1,9 @@
 """Shared fixtures.
 
 Integration tests run the real restic (found the same way the app finds it,
-so $JUNGBACKUP_RESTIC works) and, for SFTP, a throwaway OpenSSH container
-started with podman. Each is skipped when the tool isn't available.
+so $JUNGBACKUP_RESTIC works), rclone with a remote on the local disk, and,
+for SFTP, a throwaway OpenSSH container started with podman. Each is
+skipped when the tool isn't available.
 """
 
 import os
@@ -27,7 +28,7 @@ import pytest  # noqa: E402
 from gi.repository import GLib  # noqa: E402
 
 from jungbackup.backup.restic import Restic  # noqa: E402
-from jungbackup.storage import sftp  # noqa: E402
+from jungbackup.storage import rclone, sftp  # noqa: E402
 
 SFTP_IMAGE = "lscr.io/linuxserver/openssh-server:latest"
 SFTP_USER = "backup"
@@ -69,6 +70,15 @@ def source(tmp_path):
     (src / "docs" / "a.txt").write_text("hello\n")
     (src / "b.bin").write_bytes(os.urandom(64 * 1024))
     return src
+
+
+@pytest.fixture
+def rclone_remote(monkeypatch):
+    """An rclone remote of the "local" type, defined in the environment like a user's own would be in rclone.conf."""
+    if not rclone.rclone_available():
+        pytest.skip("rclone not found (set JUNGBACKUP_RCLONE)")
+    monkeypatch.setenv("RCLONE_CONFIG_JUNGBACKUPTEST_TYPE", "local")
+    return "jungbackuptest"
 
 
 def _free_port():

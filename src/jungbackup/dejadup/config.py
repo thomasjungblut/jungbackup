@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from gi.repository import Gio, GLib
 
+from ..storage.rclone import build_repository as build_rclone_repository
 from ..storage.sftp import build_repository
 
 SCHEMA = "org.gnome.DejaDup"
@@ -199,7 +200,7 @@ class DejaDupConfig:
 
     def folder(self, section):
         folder = self.get("folder", section) or ""
-        return folder.replace("$HOSTNAME", GLib.get_host_name())
+        return folder.replace("$HOSTNAME", GLib.get_host_name()).replace("$USER", GLib.get_user_name())
 
     def location(self):
         backend = self.backend
@@ -237,7 +238,21 @@ class DejaDupConfig:
                 return Location(backend, label, None, "The network server is not mounted.")
             return Location(backend, label, os.path.join(path, folder), None)
 
-        if backend in ("google", "microsoft", "rclone"):
+        if backend == "google":
+            # Our sign-in only reaches files this app created, not Déjà Dup's.
+            label = f"{BACKEND_NAMES[backend]} › {self.folder(backend)}"
+            return Location(backend, label, None, "Déjà Dup's Google Drive backup can't be opened from here. "
+                                                  "Choose Google Drive and sign in to start a new backup.")
+
+        if backend == "rclone":
+            remote = (self.get("remote", "rclone") or "").rstrip(":")
+            folder = self.folder("rclone").strip("/")
+            label = f"{remote} › {folder}"
+            if not remote:
+                return Location(backend, BACKEND_NAMES[backend], None, "No rclone remote is configured.")
+            return Location(backend, label, None, None, build_rclone_repository(remote, folder))
+
+        if backend == "microsoft":
             folder = self.folder(backend)
             label = f"{BACKEND_NAMES[backend]} › {folder}"
             return Location(backend, label, None, f"{BACKEND_NAMES[backend]} is not supported yet.")

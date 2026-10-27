@@ -93,10 +93,13 @@ class Restic:
         return argv + list(args)
 
     @staticmethod
-    def _launcher(flags):
+    def _launcher(flags, repo):
         launcher = Gio.SubprocessLauncher.new(flags)
         for var in ("RESTIC_PASSWORD", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND", "RESTIC_REPOSITORY"):
             launcher.unsetenv(var)
+        # Backend credentials (an rclone remote for Google Drive) go in the environment, not argv.
+        for var, value in for_repository(repo).restic_env().items():
+            launcher.setenv(var, value, True)
         return launcher
 
     # Quick queries -----------------------------------------------------------
@@ -109,7 +112,7 @@ class Restic:
         """
         argv = self._argv(repo, password, ["--no-lock", "--quiet"] + list(args))
         launcher = self._launcher(Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE
-                                  | Gio.SubprocessFlags.STDERR_PIPE)
+                                  | Gio.SubprocessFlags.STDERR_PIPE, repo)
         try:
             proc = launcher.spawnv(argv)
         except GLib.Error as e:
@@ -170,7 +173,7 @@ class Restic:
 
     def stream(self, repo, password, args, on_message, on_exit, nice=True):
         """Run a long job, calling on_message(dict) per JSON line and on_exit(status, ResticError or None)."""
-        return _StreamedJob(self._argv(repo, password, args, nice=nice), password, on_message, on_exit)
+        return _StreamedJob(self._argv(repo, password, args, nice=nice), repo, password, on_message, on_exit)
 
 
 def _last_error(err, status):
@@ -189,13 +192,13 @@ def _last_error(err, status):
 
 
 class _StreamedJob:
-    def __init__(self, argv, password, on_message, on_exit):
+    def __init__(self, argv, repo, password, on_message, on_exit):
         self._on_message = on_message
         self._on_exit = on_exit
         self._stderr = []
         self._open_streams = 2
         launcher = Restic._launcher(Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE
-                                    | Gio.SubprocessFlags.STDERR_PIPE)
+                                    | Gio.SubprocessFlags.STDERR_PIPE, repo)
         self.proc = launcher.spawnv(argv)
         stdin = self.proc.get_stdin_pipe()
         stdin.write_all(((password or "") + "\n").encode(), None)

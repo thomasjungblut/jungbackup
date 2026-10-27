@@ -4,6 +4,7 @@ import os
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from ..core import google
 from ..core.paths import describe_path
 from ..core.settings import Settings
 from ..storage import BACKENDS, EXISTING, NEW, OCCUPIED, UNREACHABLE, LocalStorage, for_repository
@@ -27,7 +28,8 @@ class SetupDialog(Adw.Dialog):
         self._state = None
         self._probe_source = 0
         self._probe_cancellable = None
-        self.connect("closed", lambda *_: self._cancel_probe())
+        self._sign_in = None
+        self.connect("closed", lambda *_: self._closed())
 
         self._nav = Adw.NavigationView()
         self.set_child(self._nav)
@@ -71,10 +73,18 @@ class SetupDialog(Adw.Dialog):
         group.add(self._folder_row)
         self._local_repo = current.repo if isinstance(current, LocalStorage) else ""
 
+        # The cloud account to store backups with, for backends that need one.
+        self._account_row = Adw.ActionRow(title_lines=0)
+        self._account_row.add_prefix(Gtk.Image(icon_name="avatar-default-symbolic"))
+        self._account_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        self._account_button.connect("clicked", self._account_clicked)
+        self._account_row.add_suffix(self._account_button)
+        group.add(self._account_row)
+
         # Entry rows for every remote backend, filled from the current location when it's that kind.
         self._field_rows = {}
         for backend in BACKENDS:
-            values = current.fields() if isinstance(current, backend) else {}
+            values = current.fields() if type(current) is backend else backend.default_fields()
             rows = {}
             for key, title, hint in backend.FIELDS:
                 row = Adw.EntryRow(title=title, text=values.get(key, ""), tooltip_text=hint)
@@ -82,9 +92,7 @@ class SetupDialog(Adw.Dialog):
                 group.add(row)
                 rows[key] = row
             self._field_rows[backend] = rows
-        self._field_hint = Adw.ActionRow(title_lines=0, css_classes=["dim-label"],
-                                         title="restic connects with ssh, using your SSH keys, agent and "
-                                               "~/.ssh/config. The server has to accept key logins.")
+        self._field_hint = Adw.ActionRow(title_lines=0, css_classes=["dim-label"])
         group.add(self._field_hint)
 
         self._state_row = Adw.ActionRow(title_lines=0)
@@ -114,13 +122,74 @@ class SetupDialog(Adw.Dialog):
         return BACKENDS[self._backend.get_selected()]
 
     def _backend_changed(self):
+        self._field_hint.set_title(GLib.markup_escape_text(self._selected_backend.HINT))
+        self._update_account()
+        self._fields_changed()
+
+    def _show_rows(self):
+        """Show the rows the chosen backend uses; until its sign-in is done, only that."""
         backend = self._selected_backend
+        ready = not backend.ACCOUNT or google.account() is not None
         self._folder_row.set_visible(backend is LocalStorage)
         for kind, rows in self._field_rows.items():
             for row in rows.values():
-                row.set_visible(kind is backend)
-        self._field_hint.set_visible(bool(backend.FIELDS))
-        self._fields_changed()
+                row.set_visible(kind is backend and ready)
+        self._field_hint.set_visible(bool(backend.HINT) and ready)
+        # Finding an existing backup needs no comment; the next page asks for its password if it has one.
+        self._state_row.set_visible(ready and self._state != EXISTING)
+        self._account_row.set_visible(backend.ACCOUNT)
+
+    # Google account --------------------------------------------------------
+
+    def _update_account(self, waiting=False):
+        acct = google.account()
+        if waiting:
+            title, label = "Continue in your browser. Sign in there and allow access.", "Cancel"
+        elif acct is not None:
+            title = f"Signed in as {acct['email']}" if acct["email"] else "Signed in to Google Drive"
+            label = "Sign Out"
+        else:
+            title, label = "Sign in to Google to store backups in your Drive.", "Sign In…"
+        self._account_row.set_title(GLib.markup_escape_text(title))
+        self._account_button.set_visible(label is not None)
+        self._account_button.set_label(label or "")
+        self._account_button.set_css_classes([] if acct or waiting else ["suggested-action"])
+        self._show_rows()
+
+    def _account_clicked(self, _btn):
+        if self._sign_in is not None:
+            self._sign_in.cancel()
+            self._sign_in = None
+            self._update_account()
+            return
+        if google.account() is not None:
+            google.sign_out()
+            self._update_account()
+            self._fields_changed()
+            return
+
+        def done(_acct, message):
+            self._sign_in = None
+            self._update_account()
+            if message:
+                self._account_row.set_title(GLib.markup_escape_text(message))
+            self._fields_changed()
+
+        def open_link(url):
+            Gtk.UriLauncher.new(url).launch(self.get_root(), None, None)
+
+        try:
+            self._sign_in = google.SignIn(open_link, done)
+        except OSError as e:
+            self._account_row.set_title(GLib.markup_escape_text(str(e)))
+            return
+        self._update_account(waiting=True)
+
+    def _closed(self):
+        self._cancel_probe()
+        if self._sign_in is not None:
+            self._sign_in.cancel()
+            self._sign_in = None
 
     def _fields_changed(self):
         backend = self._selected_backend
@@ -186,7 +255,7 @@ class SetupDialog(Adw.Dialog):
         text, icon = {
             None: (message, "folder-symbolic"),
             "checking": ("Connecting…", None),
-            EXISTING: ("An existing backup was found here. You'll need its password.", "object-select-symbolic"),
+            EXISTING: ("", "object-select-symbolic"),   # row hidden, see _show_rows
             NEW: ("A new, empty backup will be created here.", "list-add-symbolic"),
             OCCUPIED: ("This folder contains other files. Choose an empty folder.", "dialog-warning-symbolic"),
             UNREACHABLE: (message, "dialog-warning-symbolic"),
@@ -197,6 +266,7 @@ class SetupDialog(Adw.Dialog):
         if icon:
             self._state_icon.set_from_icon_name(icon)
         self._next.set_sensitive(state in (EXISTING, NEW))
+        self._show_rows()
 
     # Page 2: password ------------------------------------------------------
 

@@ -47,3 +47,40 @@ def forget(repo, callback=None):
         if callback:
             callback()
     Secret.password_clear(SCHEMA, {"repository": repo}, None, done)
+
+
+# Sign-ins to cloud storage (an OAuth refresh token and the account it
+# belongs to), one per service, as JSON.
+ACCOUNT_SCHEMA = Secret.Schema.new(
+    "io.jungblut.JungBackup.Account",
+    Secret.SchemaFlags.NONE,
+    {"service": Secret.SchemaAttributeType.STRING},
+)
+
+
+def lookup_account_sync(service):
+    """Blocking, for building restic's environment; None when there's none or the keyring is unavailable."""
+    try:
+        return Secret.password_lookup_sync(ACCOUNT_SCHEMA, {"service": service}, None)
+    except Exception:
+        return None
+
+
+def store_account(service, label, secret, callback=None):
+    def done(_source, result):
+        try:
+            Secret.password_store_finish(result)
+            ok = True
+        except Exception:
+            ok = False
+        if callback:
+            callback(ok)
+    Secret.password_store(ACCOUNT_SCHEMA, {"service": service}, Secret.COLLECTION_DEFAULT,
+                          label, secret, None, done)
+
+
+def forget_account(service):
+    try:
+        Secret.password_clear_sync(ACCOUNT_SCHEMA, {"service": service}, None)
+    except Exception:
+        pass
