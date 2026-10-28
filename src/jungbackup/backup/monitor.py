@@ -27,6 +27,7 @@ QUERY_OPS = {"snapshots", "stats", "ls", "find", "diff", "cat", "version", "dump
 HISTORY = 90
 SKIP_PREFIXES = ("/dev/", "/proc/", "/sys/", "/memfd:", "/run/", "/app/", "/usr/", "/etc/")
 WAIT_WINDOW = 15         # samples (seconds) behind the wait breakdown and NFS/TCP rates
+RATE_WINDOW = 30         # samples (seconds) behind the averaged read/write rates
 NETWORK_WCHANS = ("rpc_", "nfs", "cifs", "smb", "fuse", "sk_wait", "tcp_", "inet_", "unix_stream")
 
 
@@ -51,6 +52,8 @@ class Activity:
     rss: int
     read_rate: float
     write_rate: float
+    read_avg: float          # read_rate averaged over the last RATE_WINDOW seconds
+    write_avg: float
     read_total: int
     write_total: int
     current_file: str | None
@@ -61,6 +64,24 @@ class Activity:
     read_history: deque = field(default_factory=deque)
     write_history: deque = field(default_factory=deque)
     rtt_history: deque = field(default_factory=deque)
+
+
+def moving_average(values, window=RATE_WINDOW):
+    """Trailing mean of `values`, one per value, over up to `window` values.
+
+    Writes to a network share come in bursts: the engine fills a pack file in
+    memory, then blocks while the kernel flushes it, so per-second rates swing
+    between full speed and zero. The average shows the throughput actually
+    sustained.
+    """
+    out, total = [], 0.0
+    values = list(values)
+    for i, v in enumerate(values):
+        total += v
+        if i >= window:
+            total -= values[i - window]
+        out.append(total / min(i + 1, window))
+    return out
 
 
 def _read(path):
@@ -367,6 +388,8 @@ class ProcessMonitor:
             rss=rss,
             read_rate=read_rate,
             write_rate=write_rate,
+            read_avg=(moving_average(self._read_hist) or [read_rate])[-1],
+            write_avg=(moving_average(self._write_hist) or [write_rate])[-1],
             read_total=read_total,
             write_total=write_total,
             current_file=current,

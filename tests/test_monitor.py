@@ -1,6 +1,6 @@
 """Parsing of /proc data behind the live "what is the backup waiting on" view."""
 
-from jungbackup.backup.monitor import classify, nfs_summary, parse_mountstats
+from jungbackup.backup.monitor import classify, moving_average, nfs_summary, parse_mountstats
 
 MOUNTSTATS = b"""device proc mounted on /proc with fstype proc
 device 10.0.0.2:/homes mounted on /var/mnt/nas\\040home with fstype nfs4 statvers=1.1
@@ -44,3 +44,10 @@ def test_classify_prefers_blocked_threads():
     assert classify([("R", "0"), ("D", "folio_wait_bit_common")]) == "disk"
     assert classify([("R", "0"), ("S", "futex_do_wait")]) == "cpu"
     assert classify([("S", "futex_do_wait"), ("S", "ep_poll")]) == "idle"
+
+
+def test_moving_average_smooths_bursts():
+    assert moving_average([]) == []
+    assert moving_average([4, 0, 2], window=2) == [4, 2, 1]
+    # A burst every third second averages out to the sustained rate.
+    assert moving_average([0, 0, 90] * 10, window=30)[-1] == 30

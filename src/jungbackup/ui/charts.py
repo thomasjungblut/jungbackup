@@ -158,6 +158,12 @@ class BarChart(Gtk.DrawingArea, _Watcher):
 
 
 class Sparkline(Gtk.DrawingArea, _Watcher):
+    """Recent values as a filled line.
+
+    With `trend` set, the raw values fade into the background and the trend
+    (e.g. a moving average of them) is drawn on top as the main line.
+    """
+
     def __init__(self, series=0, height=36):
         super().__init__()
         self.set_content_height(height)
@@ -165,10 +171,12 @@ class Sparkline(Gtk.DrawingArea, _Watcher):
         self.set_draw_func(self._draw)
         self._series = series
         self._values = []
+        self._trend = None
         self._watch_style()
 
-    def set_values(self, values):
+    def set_values(self, values, trend=None):
         self._values = list(values)
+        self._trend = list(trend) if trend is not None else None
         self.queue_draw()
 
     def _draw(self, _area, cr, width, height):
@@ -179,7 +187,16 @@ class Sparkline(Gtk.DrawingArea, _Watcher):
         peak = max(values) or 1
         step = width / (max(len(values), 30) - 1)
         x0 = width - step * (len(values) - 1)
-        pts = [(x0 + i * step, height - 2 - (height - 4) * v / peak) for i, v in enumerate(values)]
+
+        def points(vals):
+            return [(x0 + i * step, height - 2 - (height - 4) * v / peak) for i, v in enumerate(vals)]
+
+        def line(pts):
+            cr.move_to(*pts[0])
+            for x, y in pts[1:]:
+                cr.line_to(x, y)
+
+        pts = points(values)
         cr.move_to(pts[0][0], height)
         for x, y in pts:
             cr.line_to(x, y)
@@ -187,11 +204,16 @@ class Sparkline(Gtk.DrawingArea, _Watcher):
         cr.close_path()
         _set(cr, color, 0.15)
         cr.fill()
-        cr.move_to(*pts[0])
-        for x, y in pts[1:]:
-            cr.line_to(x, y)
-        cr.set_line_width(2)
         cr.set_line_join(1)  # round
+        if self._trend:
+            line(pts)
+            cr.set_line_width(1)
+            _set(cr, color, 0.4)
+            cr.stroke()
+            line(points(self._trend))
+        else:
+            line(pts)
+        cr.set_line_width(2)
         _set(cr, color)
         cr.stroke()
 

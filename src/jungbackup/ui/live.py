@@ -9,7 +9,7 @@ import time
 
 from gi.repository import Adw, Gtk, Pango
 
-from ..backup.monitor import NUM_CPUS, WAIT_WINDOW
+from ..backup.monitor import NUM_CPUS, RATE_WINDOW, WAIT_WINDOW, moving_average
 from ..core.paths import describe_path
 from ..core.util import fmt_bytes, fmt_count, fmt_duration, fmt_rate
 from .widgets import Metric, MetricRow, label
@@ -62,10 +62,19 @@ def wait_summary(act):
         tooltip.append(f"TCP retransmits (system-wide): {act.tcp_retrans:.2f}% of segments")
     if act.io_pressure is not None:
         tooltip.append(f"I/O pressure: all running tasks stalled {act.io_pressure:.0f}% of the last 10 s")
+    if nfs is not None and blocked >= 0.3:
+        tooltip.append("Writes to NFS fill memory quickly, then wait while each file is sent to the server,\n"
+                       "so this is usually the network, not the server's disks.")
     return " · ".join(parts), "\n".join(tooltip), warn
 
 
 class ThroughputRow(MetricRow):
+    """Read and write rates, averaged so bursty writes to a network share stay readable.
+
+    The big number and the solid line are the RATE_WINDOW-second average; the
+    per-second rate is the faint line behind it and the "now" detail.
+    """
+
     def __init__(self):
         self._read = Metric("Reading", sparkline_series=0)
         self._write = Metric("Writing to Backup", sparkline_series=1)
@@ -76,12 +85,13 @@ class ThroughputRow(MetricRow):
             self._read.set("—")
             self._write.set("—")
             return
-        self._read.set(fmt_rate(act.read_rate))
-        self._write.set(fmt_rate(act.write_rate))
-        self._read.spark.set_values(act.read_history)
-        self._write.spark.set_values(act.write_history)
-        self._read.set_tooltip_text(f"{fmt_bytes(act.read_total)} read in total")
-        self._write.set_tooltip_text(f"{fmt_bytes(act.write_total)} written in total")
+        for metric, rate, avg, history, total, verb in (
+                (self._read, act.read_rate, act.read_avg, act.read_history, act.read_total, "read"),
+                (self._write, act.write_rate, act.write_avg, act.write_history, act.write_total, "written")):
+            metric.set(fmt_rate(avg), f"now {fmt_rate(rate)}")
+            metric.spark.set_values(history, moving_average(history))
+            metric.set_tooltip_text(f"Average over the last {RATE_WINDOW} s; the faint line is per second.\n"
+                                    f"{fmt_bytes(total)} {verb} in total")
 
 
 class ProcessRow(MetricRow):
