@@ -183,7 +183,7 @@ class Window(Adw.ApplicationWindow):
         clamp.set_child(box)
 
         self.hero = Hero(on_backup=self.backup_now)
-        self.live = LiveCard(on_cancel=lambda: self.job and self.job.cancel())
+        self.live = LiveCard(on_cancel=self._stop_job)
         self.tiles = StatTiles()
         self.breakdown = FilesBreakdown()
         self.charts = HistoryCharts()
@@ -433,6 +433,11 @@ class Window(Adw.ApplicationWindow):
         self.get_application().hold()
         self.job.start()
         self._render_all()
+
+    def _stop_job(self):
+        if self.job is not None:
+            self.job.cancel()
+            self._render_live()
 
     def _on_job_update(self, job):
         self._render_live()

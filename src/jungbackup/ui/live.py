@@ -217,8 +217,13 @@ class LiveCard(Gtk.Revealer):
             return
         self.set_reveal_child(True)
         self._cancel_btn.set_visible(job is not None)
+        self._cancel_btn.set_sensitive(job is None or not job.cancelled)
 
-        if job is not None:
+        if job is not None and job.cancelled:
+            self._title.set_label("Stopping Backup…")
+            self._sub.set_label("Waiting for restic to shut down, this can take a moment")
+            started = job.started
+        elif job is not None:
             self._title.set_label(PHASES.get(job.phase, "Preparing…"))
             self._sub.set_label(f"Saving to {storage_label}")
             started = job.started
