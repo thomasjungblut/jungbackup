@@ -1,0 +1,92 @@
+# Builds the Flatpak bundle for x86_64 and aarch64 on every push to main and
+# every pull request; each run keeps the bundles as downloadable artifacts.
+# Every push to main also refreshes the "continuous" prerelease, so the
+# newest build is always at
+#   https://github.com/<repo>/releases/download/continuous/jungbackup-<arch>.flatpak
+# and pushing a tag like v0.2.0 publishes a release of its own.
+name: Flatpak
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.variant.arch }})
+    strategy:
+      matrix:
+        variant:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.variant.runner }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      # Jung Backup's Google OAuth client secret isn't in git (see core/google.py).
+      # Secrets aren't passed to pull requests from forks; those builds fall back
+      # to rclone's shared client.
+      - name: Add the Google client secret
+        env:
+          JB_GDRIVE_CLIENT_ID_SECRET: ${{ secrets.JB_GDRIVE_CLIENT_ID_SECRET }}
+        run: |
+          if [ -n "$JB_GDRIVE_CLIENT_ID_SECRET" ]; then
+            printf 'CLIENT_SECRET = "%s"\n' "$JB_GDRIVE_CLIENT_ID_SECRET" > src/jungbackup/core/_client.py
+          else
+            echo "::warning::No Google client secret: Drive sign-in will use rclone's shared client."
+          fi
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: build-aux/flatpak/io.jungblut.JungBackup.yml
+          bundle: jungbackup-${{ matrix.variant.arch }}.flatpak
+          artifact-name: jungbackup-${{ matrix.variant.arch }}
+          arch: ${{ matrix.variant.arch }}
+
+  release:
+    name: Release
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # Two quick pushes must not update the continuous release at the same time.
+    concurrency:
+      group: release-${{ github.ref }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      INSTALL: "Install with: flatpak install --user jungbackup-x86_64.flatpak (or -aarch64 on ARM)."
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: jungbackup-*
+          merge-multiple: true
+
+      - name: Publish a versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release create "$GITHUB_REF_NAME" jungbackup-*.flatpak \
+            --title "Jung Backup ${GITHUB_REF_NAME#v}" --generate-notes --notes "$INSTALL"
+
+      - name: Update the continuous release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          notes="Latest build from main, commit ${GITHUB_SHA::7} ($(date -u +%Y-%m-%d)). Not a tested release.
+
+          $INSTALL"
+          if gh release view continuous >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/continuous" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release upload continuous jungbackup-*.flatpak --clobber
+            gh release edit continuous --notes "$notes"
+          else
+            gh release create continuous jungbackup-*.flatpak --target "$GITHUB_SHA" --prerelease \
+              --title "Continuous build" --notes "$notes"
+          fi
