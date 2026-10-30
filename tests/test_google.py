@@ -20,11 +20,32 @@ def _output(token=TOKEN):
     return f"Paste the following into your remote machine --->\n{_blob({'token': json.dumps(token)})}\n<---End paste\n"
 
 
+@pytest.fixture(autouse=True)
+def no_client_secret(monkeypatch):
+    """Builds without the secret use rclone's client; tests that need ours set it."""
+    monkeypatch.setattr(google, "CLIENT_SECRET", "")
+
+
+def _options(argv):
+    return json.loads(base64.b64decode(argv[3] + "=" * (-len(argv[3]) % 4)))
+
+
 def test_authorize_asks_for_drive_file_only():
     argv = google.authorize_argv("rclone")
     assert argv[:3] == ["rclone", "authorize", "drive"] and "--auth-no-open-browser" in argv
-    padded = argv[3] + "=" * (-len(argv[3]) % 4)
-    assert json.loads(base64.b64decode(padded)) == {"scope": "drive.file"}
+    assert _options(argv) == {"scope": "drive.file"}
+
+
+def test_authorize_with_our_client(monkeypatch):
+    monkeypatch.setattr(google, "CLIENT_SECRET", "s")
+    assert _options(google.authorize_argv("rclone")) == {"scope": "drive.file", "client_id": google.CLIENT_ID,
+                                                         "client_secret": "s"}
+
+
+def test_tokens_keep_the_client_that_issued_them(monkeypatch):
+    monkeypatch.setattr(google, "CLIENT_SECRET", "s")
+    assert google.client_of({"token": TOKEN}) == {}   # signed in through rclone's client
+    assert google.client_of({"token": TOKEN, "client_id": google.CLIENT_ID})["client_secret"] == "s"
 
 
 def test_parse_token():
@@ -67,6 +88,14 @@ def test_sign_in_round_trip(fake_rclone):
     assert results == [({"email": "me@example.com", "token": TOKEN}, None)]
     assert google.account()["token"] == TOKEN
     assert json.loads(stored["google-drive"])["email"] == "me@example.com"
+
+
+def test_sign_in_records_our_client(fake_rclone, monkeypatch):
+    monkeypatch.setattr(google, "CLIENT_SECRET", "s")
+    make, _stored = fake_rclone
+    make(_output())
+    _links, [(acct, _message)] = _run_sign_in()
+    assert acct["client_id"] == google.CLIENT_ID
 
 
 def test_sign_in_failure(fake_rclone):

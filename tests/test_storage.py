@@ -6,6 +6,7 @@ import os
 import pytest
 
 from jungbackup.backup.restic import ResticError
+from jungbackup.core import google
 from jungbackup.storage import (
     EXISTING,
     NEW,
@@ -106,8 +107,17 @@ def test_gdrive_env_defines_remote_without_config_file():
     assert env["RCLONE_CONFIG"] == os.devnull
     assert env["RCLONE_CONFIG_JUNGBACKUPGDRIVE_TYPE"] == "drive"
     assert env["RCLONE_CONFIG_JUNGBACKUPGDRIVE_SCOPE"] == "drive.file"
+    assert env["RCLONE_CONFIG_JUNGBACKUPGDRIVE_PACER_MIN_SLEEP"] == "200ms"
     assert json.loads(env["RCLONE_CONFIG_JUNGBACKUPGDRIVE_TOKEN"]) == {"refresh_token": "r"}
     assert "RCLONE_CONFIG_JUNGBACKUPGDRIVE_TOKEN" not in rclone_env(None)
+    assert "RCLONE_CONFIG_JUNGBACKUPGDRIVE_CLIENT_ID" not in env   # token from rclone's own client
+
+
+def test_gdrive_env_uses_the_client_that_issued_the_token(monkeypatch):
+    monkeypatch.setattr(google, "CLIENT_SECRET", "s")
+    env = rclone_env({"email": "me@example.com", "token": {"refresh_token": "r"}, "client_id": google.CLIENT_ID})
+    assert env["RCLONE_CONFIG_JUNGBACKUPGDRIVE_CLIENT_ID"] == google.CLIENT_ID
+    assert env["RCLONE_CONFIG_JUNGBACKUPGDRIVE_CLIENT_SECRET"] == "s"
 
 
 @pytest.mark.parametrize(("stderr", "expected"), [

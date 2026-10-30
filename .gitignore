@@ -226,3 +226,6 @@ __marimo__/
 /build-dir/
 /repo/
 /jungbackup.flatpak
+
+# Jung Backup's Google OAuth client secret, written before building (see core/google.py)
+src/jungbackup/core/_client.py

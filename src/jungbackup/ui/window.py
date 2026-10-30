@@ -2,7 +2,6 @@
 
 import json
 import os
-from datetime import timedelta
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
@@ -448,6 +447,7 @@ class Window(Adw.ApplicationWindow):
         if ok:
             self.settings.last_backup = now().isoformat()
             self.settings.last_error = ""
+            self.settings.failed_attempts = 0
             message = "Backup finished"
             if job.warnings:
                 message += f" with {len(job.warnings)} warning{'s' if len(job.warnings) != 1 else ''}"
@@ -455,6 +455,7 @@ class Window(Adw.ApplicationWindow):
             self._notify("Backup finished", message if job.warnings else "Your files are safe.")
         elif error:
             self.settings.last_error = error
+            self.settings.failed_attempts += 1
             self.toast("Backup failed")
             self._notify("Backup failed", error)
         else:
@@ -472,10 +473,8 @@ class Window(Adw.ApplicationWindow):
     def _scheduler(self):
         s = self.settings
         if s.configured and s.periodic and self.job is None and self.activity is None:
-            due = s.next_backup_time
-            last_attempt = parse_time(s.last_attempt)
-            retry_ok = last_attempt is None or now() - last_attempt > timedelta(hours=1)
-            if due is not None and due <= now() and retry_ok and self.storage.has_repository() is not False:
+            due = s.next_attempt_time
+            if due is not None and due <= now() and self.storage.has_repository() is not False:
                 self.backup_now(automatic=True)
         return GLib.SOURCE_CONTINUE
 

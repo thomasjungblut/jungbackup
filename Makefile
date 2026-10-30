@@ -57,13 +57,26 @@ flatpak-deps: ## Install flatpak-builder and the GNOME SDK (user installation)
 	flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 	flatpak install --user -y flathub org.flatpak.Builder org.gnome.Sdk//$(SDK) org.gnome.Platform//$(SDK)
 
+# The Google OAuth client secret isn't in git (see core/google.py). With
+# $JB_GDRIVE_CLIENT_ID_SECRET set (as in CI) it's written into the source tree,
+# where the Flatpak build picks it up; otherwise an existing file is kept.
+CLIENT_SECRET_FILE := src/jungbackup/core/_client.py
+
+.PHONY: client-secret
+client-secret: ## Write the Google client secret from $JB_GDRIVE_CLIENT_ID_SECRET, if set
+	@if [ -n "$$JB_GDRIVE_CLIENT_ID_SECRET" ]; then \
+		printf 'CLIENT_SECRET = "%s"\n' "$$JB_GDRIVE_CLIENT_ID_SECRET" > $(CLIENT_SECRET_FILE); \
+	elif [ ! -f $(CLIENT_SECRET_FILE) ]; then \
+		echo "No Google client secret: Drive sign-in will use rclone's shared client."; \
+	fi
+
 .PHONY: flatpak
-flatpak: ## Build the Flatpak and install it for the current user
+flatpak: client-secret ## Build the Flatpak and install it for the current user
 	$(BUILDER) --user --install --force-clean --install-deps-from=flathub \
 		--repo=repo build-dir $(MANIFEST)
 
 .PHONY: flatpak-build
-flatpak-build: ## Build the Flatpak into ./repo without installing it
+flatpak-build: client-secret ## Build the Flatpak into ./repo without installing it
 	$(BUILDER) --user --force-clean --install-deps-from=flathub \
 		--repo=repo build-dir $(MANIFEST)
 

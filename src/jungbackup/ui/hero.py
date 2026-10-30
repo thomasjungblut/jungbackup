@@ -50,7 +50,9 @@ class Hero(Gtk.Box):
         self._title.set_label(title)
 
         parts = [f"Last backup {fmt_ago(last)}" if last else "Your files are not backed up yet"]
-        if s.periodic:
+        if s.periodic and failed:
+            parts.append(f"trying again {fmt_until(s.next_attempt_time)}")
+        elif s.periodic:
             parts.append(f"next {fmt_until(s.next_backup_time)}" if last else "starting soon")
         else:
             parts.append("automatic backups are off")

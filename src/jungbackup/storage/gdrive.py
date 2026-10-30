@@ -25,9 +25,17 @@ def rclone_env(acct):
         "RCLONE_CONFIG": os.devnull,
         f"{var}_TYPE": "drive",
         f"{var}_SCOPE": google.SCOPE,
+        # Calls go through rclone's OAuth client, whose quota is shared by
+        # every rclone user, so Drive answers with rateLimitExceeded well
+        # below its documented limits. Pace calls more gently than rclone's
+        # default (100ms, bursts of 100) to run into that less.
+        f"{var}_PACER_MIN_SLEEP": "200ms",
+        f"{var}_PACER_BURST": "10",
     }
     if acct:
         env[f"{var}_TOKEN"] = json.dumps(acct["token"])
+        for key, value in google.client_of(acct).items():
+            env[f"{var}_{key.upper()}"] = value
     return env
 
 

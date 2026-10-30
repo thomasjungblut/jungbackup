@@ -8,13 +8,18 @@ token from its output once the browser comes back. The token and the
 account's address go into the keyring; storage.gdrive hands the token to
 rclone again for every restic run.
 
-rclone signs in with its own built-in OAuth client, so there's nothing to
-register with Google. We ask for the drive.file scope: the app sees the
+We sign in with Jung Backup's own OAuth client when the build has its
+secret (core/_client.py, which isn't in git: write it before building, or
+set $JB_GDRIVE_CLIENT_ID_SECRET). Without it, rclone uses its built-in
+client, whose quota every rclone user shares, so Drive throttles it often.
+A token only works with the client that issued it, so the account records
+which one that was. We ask for the drive.file scope: the app sees the
 files it created itself, which is all restic needs, and nothing else.
 """
 
 import base64
 import json
+import os
 import re
 import shutil
 import threading
@@ -26,6 +31,12 @@ from gi.repository import Gio, GLib
 from ..storage.rclone import find_rclone
 from . import keyring
 
+try:
+    from ._client import CLIENT_SECRET
+except ImportError:
+    CLIENT_SECRET = os.environ.get("JB_GDRIVE_CLIENT_ID_SECRET", "")
+
+CLIENT_ID = "249497314886-chq9r56uc6nk8v18fq1cb7hm63ag1noj.apps.googleusercontent.com"
 SCOPE = "drive.file"
 ABOUT_URL = "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)"
 SERVICE = "google-drive"
@@ -78,8 +89,19 @@ def _decode(blob):
     return json.loads(base64.b64decode(blob + "=" * (-len(blob) % 4)))
 
 
+def client():
+    """rclone options for our own OAuth client, or {} to use rclone's."""
+    return {"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET} if CLIENT_SECRET else {}
+
+
+def client_of(acct):
+    """rclone options for the OAuth client that issued this account's token."""
+    ours = client()
+    return ours if ours and acct.get("client_id") == CLIENT_ID else {}
+
+
 def authorize_argv(rclone):
-    return [rclone, "authorize", "drive", _encode({"scope": SCOPE}), "--auth-no-open-browser"]
+    return [rclone, "authorize", "drive", _encode({"scope": SCOPE, **client()}), "--auth-no-open-browser"]
 
 
 def parse_token(stdout):
@@ -189,6 +211,8 @@ class SignIn:
 
         def look_up():
             acct = {"email": account_email(token), "token": token}
+            if client():
+                acct["client_id"] = CLIENT_ID
             GLib.idle_add(self._finish, acct, None)
         threading.Thread(target=look_up, daemon=True).start()
         return GLib.SOURCE_REMOVE

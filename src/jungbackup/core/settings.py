@@ -8,12 +8,19 @@ Déjà Dup's settings, or set up from scratch.
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from datetime import timedelta
 
 from gi.repository import GLib
 
 from .util import now, parse_time
 
 PATH = os.path.join(GLib.get_user_config_dir(), "jungbackup", "settings.json")
+
+# After a failed automatic backup, wait an hour before trying again, doubling
+# with each further failure (Google Drive throttles uploads for hours, and its
+# daily upload limit resets after a day).
+RETRY_BASE = timedelta(hours=1)
+RETRY_MAX = timedelta(days=1)
 
 
 @dataclass
@@ -31,6 +38,7 @@ class Settings:
     last_backup: str = ""                       # ISO 8601, last successful backup
     last_attempt: str = ""
     last_error: str = ""
+    failed_attempts: int = 0                    # failures since the last successful backup
     imported_from: str = ""                     # "deja-dup" when imported
 
     @property
@@ -48,8 +56,20 @@ class Settings:
         last = self.last_backup_time
         if last is None:
             return now()
-        from datetime import timedelta
         return last + timedelta(days=self.period_days)
+
+    @property
+    def retry_delay(self):
+        return min(RETRY_BASE * 2 ** max(self.failed_attempts - 1, 0), RETRY_MAX)
+
+    @property
+    def next_attempt_time(self):
+        """When the scheduler will next start a backup: when it's due, but not before the retry delay."""
+        due = self.next_backup_time
+        attempt = parse_time(self.last_attempt)
+        if due is None or attempt is None:
+            return due
+        return max(due, attempt + self.retry_delay)
 
     @classmethod
     def load(cls):
