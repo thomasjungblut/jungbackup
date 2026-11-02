@@ -13,7 +13,10 @@ secret (core/_client.py, which isn't in git: write it before building, or
 set $JB_GDRIVE_CLIENT_ID_SECRET). Without it, rclone uses its built-in
 client, whose quota every rclone user shares, so Drive throttles it often.
 A token only works with the client that issued it, so the account records
-which one that was. We ask for the drive.file scope: the app sees the
+which one that was. Under drive.file an app also only sees the files its own
+client created, so a backup made through rclone's client stays on it: the
+settings record the client each Drive backup was made with, and signing in
+again uses that one. We ask for the drive.file scope: the app sees the
 files it created itself, which is all restic needs, and nothing else.
 """
 
@@ -37,6 +40,7 @@ except ImportError:
     CLIENT_SECRET = os.environ.get("JB_GDRIVE_CLIENT_ID_SECRET", "")
 
 CLIENT_ID = "249497314886-chq9r56uc6nk8v18fq1cb7hm63ag1noj.apps.googleusercontent.com"
+RCLONE_CLIENT = ""      # rclone's built-in OAuth client
 SCOPE = "drive.file"
 ABOUT_URL = "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)"
 SERVICE = "google-drive"
@@ -89,19 +93,24 @@ def _decode(blob):
     return json.loads(base64.b64decode(blob + "=" * (-len(blob) % 4)))
 
 
-def client():
-    """rclone options for our own OAuth client, or {} to use rclone's."""
-    return {"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET} if CLIENT_SECRET else {}
+def default_client():
+    """The client new sign-ins use: our own when this build has its secret."""
+    return CLIENT_ID if CLIENT_SECRET else RCLONE_CLIENT
+
+
+def client(client_id=None):
+    """rclone options for an OAuth client (the default one if None), or {} for rclone's."""
+    client_id = default_client() if client_id is None else client_id
+    return {"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET} if client_id == CLIENT_ID and CLIENT_SECRET else {}
 
 
 def client_of(acct):
     """rclone options for the OAuth client that issued this account's token."""
-    ours = client()
-    return ours if ours and acct.get("client_id") == CLIENT_ID else {}
+    return client(acct.get("client_id", RCLONE_CLIENT))
 
 
-def authorize_argv(rclone):
-    return [rclone, "authorize", "drive", _encode({"scope": SCOPE, **client()}), "--auth-no-open-browser"]
+def authorize_argv(rclone, client_id=None):
+    return [rclone, "authorize", "drive", _encode({"scope": SCOPE, **client(client_id)}), "--auth-no-open-browser"]
 
 
 def parse_token(stdout):
@@ -131,15 +140,17 @@ class SignIn:
 
     on_link(url) is called with the page to open; then on_done(account, None)
     or on_done(None, message), on the main loop, or not at all after cancel().
-    Raises OSError when rclone can't be started.
+    client_id picks the OAuth client (None for the default one). Raises
+    OSError when rclone can't be started.
     """
 
-    def __init__(self, on_link, on_done):
+    def __init__(self, on_link, on_done, client_id=None):
         rclone = find_rclone() or shutil.which("rclone")
         if rclone is None:
             raise OSError("Google Drive needs rclone, which isn't installed.")
         self._on_link = on_link
         self._on_done = on_done
+        self._client = client(client_id)
         self._cancelled = False
         self._linked = False
         self._stdout = []
@@ -147,7 +158,7 @@ class SignIn:
         launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
         launcher.setenv("RCLONE_CONFIG", "/dev/null", True)
         try:
-            self._proc = launcher.spawnv(authorize_argv(rclone))
+            self._proc = launcher.spawnv(authorize_argv(rclone, client_id))
         except GLib.Error as e:
             raise OSError(f"Couldn't start rclone: {e.message}") from e
         self._timeout = GLib.timeout_add_seconds(WAIT_SECONDS, self._timed_out)
@@ -211,7 +222,7 @@ class SignIn:
 
         def look_up():
             acct = {"email": account_email(token), "token": token}
-            if client():
+            if self._client:
                 acct["client_id"] = CLIENT_ID
             GLib.idle_add(self._finish, acct, None)
         threading.Thread(target=look_up, daemon=True).start()

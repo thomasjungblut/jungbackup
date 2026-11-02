@@ -15,6 +15,8 @@ from ..core import google
 from .rclone import RcloneStorage, rclone_available
 
 REMOTE = "jungbackupgdrive"
+# What rclone reports when the token is revoked, expired for good, or missing.
+EXPIRED = ("invalid_grant", "Token has been expired or revoked", "empty token found")
 PREFIX = f"rclone:{REMOTE}:"
 
 
@@ -73,6 +75,13 @@ class GoogleDriveStorage(RcloneStorage):
     def reachable(self):
         return google.account() is not None
 
+    def signed_out(self):
+        return google.account() is None
+
+    def sign_in_expired(self, error):
+        text = f"{error}\n{getattr(error, 'details', '')}"
+        return any(s in text for s in EXPIRED)
+
     def missing(self):
         if google.account() is None:
             return "Sign in to Google to continue."
@@ -82,8 +91,8 @@ class GoogleDriveStorage(RcloneStorage):
 
     def explain(self, error):
         text = f"{error}\n{getattr(error, 'details', '')}"
-        if "invalid_grant" in text or "Token has been expired or revoked" in text:
-            return "Google ended the sign-in. Sign in again under Settings › Storage Location › Change…."
+        if self.sign_in_expired(error):
+            return "Google ended the sign-in. Sign in again to keep backing up."
         if "userRateLimitExceeded" in text or "rateLimitExceeded" in text:
             return "Google Drive is limiting uploads right now. The next backup will continue."
         if "storageQuotaExceeded" in text:

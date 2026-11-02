@@ -113,6 +113,18 @@ def test_gdrive_env_defines_remote_without_config_file():
     assert "RCLONE_CONFIG_JUNGBACKUPGDRIVE_CLIENT_ID" not in env   # token from rclone's own client
 
 
+def test_gdrive_needs_a_sign_in(monkeypatch):
+    storage = GoogleDriveStorage("rclone:jungbackupgdrive:b")
+    monkeypatch.setattr(google, "_account", None)
+    assert storage.signed_out()
+    monkeypatch.setattr(google, "_account", {"email": "", "token": {"refresh_token": "r"}})
+    assert not storage.signed_out()
+    expired = ResticError("Fatal: unable to open repository", 1,
+                          "couldn't fetch token: invalid_grant: maybe token expired?")
+    assert storage.sign_in_expired(expired)
+    assert not storage.sign_in_expired(ResticError("dial tcp: i/o timeout", 1, ""))
+
+
 def test_gdrive_env_uses_the_client_that_issued_the_token(monkeypatch):
     monkeypatch.setattr(google, "CLIENT_SECRET", "s")
     env = rclone_env({"email": "me@example.com", "token": {"refresh_token": "r"}, "client_id": google.CLIENT_ID})

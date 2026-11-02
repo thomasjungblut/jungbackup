@@ -42,6 +42,11 @@ def test_authorize_with_our_client(monkeypatch):
                                                          "client_secret": "s"}
 
 
+def test_authorize_with_rclones_client_for_older_backups(monkeypatch):
+    monkeypatch.setattr(google, "CLIENT_SECRET", "s")
+    assert _options(google.authorize_argv("rclone", google.RCLONE_CLIENT)) == {"scope": "drive.file"}
+
+
 def test_tokens_keep_the_client_that_issued_them(monkeypatch):
     monkeypatch.setattr(google, "CLIENT_SECRET", "s")
     assert google.client_of({"token": TOKEN}) == {}   # signed in through rclone's client
@@ -96,6 +101,15 @@ def test_sign_in_records_our_client(fake_rclone, monkeypatch):
     make(_output())
     _links, [(acct, _message)] = _run_sign_in()
     assert acct["client_id"] == google.CLIENT_ID
+
+
+def test_sign_in_again_with_rclones_client(fake_rclone, monkeypatch):
+    monkeypatch.setattr(google, "CLIENT_SECRET", "s")
+    make, _stored = fake_rclone
+    make(_output())
+    links = []
+    [(acct, _message)] = [wait_for(lambda done: google.SignIn(links.append, done, google.RCLONE_CLIENT), timeout=10)]
+    assert "client_id" not in acct
 
 
 def test_sign_in_failure(fake_rclone):

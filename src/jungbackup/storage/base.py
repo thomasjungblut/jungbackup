@@ -58,6 +58,14 @@ class Storage:
         """Cheap check whether starting restic is worth it. True when it can't be told without connecting."""
         return True
 
+    def signed_out(self):
+        """True when the user has to sign in before restic can reach this location."""
+        return False
+
+    def sign_in_expired(self, error):
+        """True when a ResticError says the sign-in is no longer valid."""
+        return False
+
     def has_repository(self):
         """True/False when that's known without restic, None otherwise."""
         return None

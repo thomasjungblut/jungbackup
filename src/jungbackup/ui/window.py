@@ -8,7 +8,7 @@ from gi.repository import Adw, Gio, GLib, GObject, Gtk
 from ..backup.job import BackupJob
 from ..backup.monitor import ProcessMonitor
 from ..backup.restic import Restic
-from ..core import keyring
+from ..core import google, keyring
 from ..core.paths import describe_path
 from ..core.settings import Settings
 from ..core.util import fmt_days, now, parse_time, snapshot_duration
@@ -48,6 +48,7 @@ class Window(Adw.ApplicationWindow):
         self._cancellable = None
         self._monitor = ProcessMonitor()
         self._was_active = False
+        self._sign_in = None
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
@@ -285,6 +286,10 @@ class Window(Adw.ApplicationWindow):
             self.snapshots = self.raw_stats = None
         if password:
             keyring.store(settings.repository, password)
+        if self.storage.ACCOUNT:
+            # Drive only shows an app the files its own OAuth client made, so remember which one that was.
+            self.settings.drive_client = (google.account() or {}).get("client_id", google.RCLONE_CLIENT)
+            self.settings.save()
         self.show_page()
 
     def edit_settings(self):
@@ -326,6 +331,32 @@ class Window(Adw.ApplicationWindow):
             self.refresh()
         keyring.lookup(self.settings.repository, found)
 
+    def sign_in(self):
+        """Sign in to Google again, with the client the backup was made with."""
+        def open_link(url):
+            Gtk.UriLauncher.new(url).launch(self, None, None)
+
+        def done(acct, message):
+            self._sign_in = None
+            if acct is None:
+                self.toast(message)
+            else:
+                self.toast(f"Signed in as {acct['email']}" if acct["email"] else "Signed in to Google Drive")
+            self.refresh()
+
+        try:
+            self._sign_in = google.SignIn(open_link, done, self.settings.drive_client)
+        except OSError as e:
+            self.toast(str(e))
+            return
+        self._render_all()
+
+    def _cancel_sign_in(self):
+        if self._sign_in is not None:
+            self._sign_in.cancel()
+            self._sign_in = None
+        self._render_all()
+
     def ask_password(self):
         def unlocked(password, data):
             self.password = password
@@ -337,6 +368,9 @@ class Window(Adw.ApplicationWindow):
     def refresh(self):
         self._query_filesystem()
         if self.password is None or self._fetching or not self.restic.available:
+            self._render_all()
+            return
+        if self.storage.signed_out():
             self._render_all()
             return
         if self.storage.has_repository() is False:
@@ -354,6 +388,11 @@ class Window(Adw.ApplicationWindow):
             if error.wrong_password:
                 self.password = None
                 keyring.forget(self.settings.repository)
+            if self.storage.sign_in_expired(error):
+                google.sign_out()   # the token is useless now; the banner offers to sign in again
+                self.stats_error = None
+                self._render_all()
+                return
             self.stats_error = self.storage.explain(error)
             self._render_all()
             return
@@ -474,7 +513,8 @@ class Window(Adw.ApplicationWindow):
         s = self.settings
         if s.configured and s.periodic and self.job is None and self.activity is None:
             due = s.next_attempt_time
-            if due is not None and due <= now() and self.storage.has_repository() is not False:
+            if (due is not None and due <= now() and not self.storage.signed_out()
+                    and self.storage.has_repository() is not False):
                 self.backup_now(automatic=True)
         return GLib.SOURCE_CONTINUE
 
@@ -539,6 +579,12 @@ class Window(Adw.ApplicationWindow):
             return
         if not self.restic.available:
             self._set_banner("restic was not found. Install restic or Déjà Dup to use this app.")
+        elif self._sign_in is not None:
+            self._set_banner("Continue in your browser: sign in to Google there and allow access.", "Cancel",
+                             self._cancel_sign_in)
+        elif self.storage.signed_out():
+            self._set_banner("You're signed out of Google Drive. Sign in again to keep backing up.", "Sign In…",
+                             self.sign_in)
         elif self.password is None and self.settings.encrypted:
             self._set_banner("Enter your backup password to see statistics and back up", "Unlock",
                              self.ask_password)

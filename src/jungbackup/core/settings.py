@@ -40,6 +40,7 @@ class Settings:
     last_error: str = ""
     failed_attempts: int = 0                    # failures since the last successful backup
     imported_from: str = ""                     # "deja-dup" when imported
+    drive_client: str = ""                      # Google OAuth client a Drive backup was made with; "" = rclone's
 
     @property
     def configured(self):
