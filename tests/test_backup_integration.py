@@ -11,6 +11,7 @@ import uuid
 import pytest
 
 from conftest import PASSWORD, wait_for
+from jungbackup.backup import search
 from jungbackup.backup.job import BackupJob
 from jungbackup.backup.restore import RestoreJob, plan_copy, plan_in_place
 from jungbackup.core.settings import Settings
@@ -163,3 +164,27 @@ def test_browse_and_restore(restic, storage, source):
     target = out / "saved.pdf"
     _data, error = wait_for(lambda done: restic.dump(storage.repo, PASSWORD, sid, str(pdf), str(target), done))
     assert error is None and target.read_text() == "pdf\n"
+
+
+def test_search_a_folder_and_below(restic, storage, source):
+    (source / "docs" / "old").mkdir()
+    (source / "docs" / "old" / "Resume 2019.pdf").write_text("old\n")
+    (source / "docs" / "resume.odt").write_text("new\n")
+    (source / "elsewhere-resume.txt").write_text("x\n")
+    settings = Settings(repository=storage.repo, includes=[str(source)], excludes=[])
+    assert _backup(restic, settings)[1]
+    (snapshot,), _ = _snapshots(restic, storage)
+
+    def find(text, folder):
+        query = search.Query(text, str(folder))
+        data, error = wait_for(lambda done: restic.find(storage.repo, PASSWORD, snapshot["id"], query.pattern, done))
+        assert error is None, error
+        return sorted(n["path"][len(str(source)):] for n in query.results(data))
+
+    assert find("RESUME", source / "docs") == ["/docs/old/Resume 2019.pdf", "/docs/resume.odt"]
+    assert find("resume", source) == ["/docs/old/Resume 2019.pdf", "/docs/resume.odt", "/elsewhere-resume.txt"]
+    assert find("*.pdf", source) == ["/docs/old/Resume 2019.pdf"]
+    assert find("old/res", source) == ["/docs/old/Resume 2019.pdf"]
+    assert find("nothing", source) == []
+    _data, error = wait_for(lambda done: restic.find(storage.repo, PASSWORD, snapshot["id"], "[x", done))
+    assert search.bad_pattern(error)

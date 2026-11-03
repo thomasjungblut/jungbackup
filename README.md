@@ -27,7 +27,19 @@ switches between **Backup** (the dashboard), **Restore** and **Settings**; the
 main menu and the edit buttons lead to the last two as well. In Restore, pick
 a snapshot on the timeline (click it, use the arrow buttons, or ←/→ once it
 has focus) and browse its files; switching snapshots keeps you in
-the same folder, so you can step back until the lost file shows up. Tick files
+the same folder, so you can step back until the lost file shows up.
+
+Don't remember which folder it was in? The search button (Ctrl+F) searches
+the folder you're in and every folder below it, in the chosen snapshot, as you
+type: `resume` finds `Documents/jobs/Resume-2024.pdf`, a `/` matches the end
+of a path (`jobs/resume`), and `*` and `?` work as wildcards (`*.pdf`). Results
+can be ticked and restored like any other file. Step back on the timeline and
+the search runs again in that snapshot, until the file turns up. restic keeps
+no index of names, so a search walks the folder's listings (from its local
+cache): start it in the folder you think it's in, not at the top, to keep it
+quick.
+
+Tick files
 and folders, in as many folders as you like, then:
 
 * **Restore** puts them back where they were, replacing what's there now.

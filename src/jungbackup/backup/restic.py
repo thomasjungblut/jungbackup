@@ -162,6 +162,11 @@ class Restic:
             callback([n for n in nodes if n.get("path") != path], None)
         self.run_json(repo, password, ["ls", snapshot, path], done, cancellable, lines=True)
 
+    def find(self, repo, password, snapshot, pattern, callback, cancellable=None):
+        """Call callback(groups, error) with the matches for `pattern` in `snapshot`, ignoring case."""
+        self.run_json(repo, password, ["find", "--ignore-case", f"--snapshot={snapshot}", "--", pattern],
+                      callback, cancellable)
+
     def dump(self, repo, password, snapshot, path, target, callback, cancellable=None):
         """Write one file from a snapshot to `target`; callback(None, error)."""
         self.run_json(repo, password, ["dump", f"--target={target}", snapshot, path], callback, cancellable)

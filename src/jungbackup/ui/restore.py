@@ -5,12 +5,14 @@ import os
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango
 
 from ..backup.restore import RestoreJob, plan_copy, plan_in_place
+from ..backup.search import Query, bad_pattern
 from ..core.paths import describe_path
 from ..core.util import fmt_bytes, fmt_date, parse_time
 from .timeline import Timeline
 from .widgets import label
 
 PULSE_MS = 120
+MAX_RESULTS = 1000
 
 
 def _plural(n, one, many=None):
@@ -44,6 +46,16 @@ class Entry(GObject.Object):
         self.mtime = parse_time(node.get("mtime"))
         self.link = node.get("type") == "symlink"
         self.sort_key = (not self.is_dir, GLib.utf8_collate_key_for_filename(self.name, -1))
+        self.folder = None      # for search results: where it is, below the searched folder
+
+    @classmethod
+    def found(cls, node, searched):
+        """A search result in `searched` or below, sorted by its path there."""
+        entry = cls(node)
+        below = os.path.dirname(entry.path)[len(searched.rstrip("/")):].lstrip("/")
+        entry.folder = below
+        entry.sort_key = (False, GLib.utf8_collate_key_for_filename(os.path.join(below, entry.name), -1))
+        return entry
 
     def icon(self):
         if self.is_dir:
@@ -89,10 +101,14 @@ class RestorePage(Gtk.Box):
         self._pulse = 0
         self._after_stop = None
         self._state_shown = True    # showing locked/loading/… instead of a folder
+        self._query = None          # the search shown instead of the folder, if any
+        self._searched = {}         # (snapshot id, pattern) → [Entry]
+        self._find_cancellable = None
 
         self._up = Gtk.Button(icon_name="go-up-symbolic", tooltip_text="Parent Folder (Alt+↑)", sensitive=False)
         self._up.connect("clicked", lambda *_: self._go_up())
-        self._search_btn = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text="Filter This Folder")
+        self._search_btn = Gtk.ToggleButton(icon_name="system-search-symbolic",
+                                            tooltip_text="Search This Folder and Below (Ctrl+F)")
         self.header_start, self.header_end = [self._up], [self._search_btn]
 
         self._timeline = Timeline(on_changed=self._snapshot_chosen)
@@ -107,6 +123,8 @@ class RestorePage(Gtk.Box):
         shortcuts = Gtk.ShortcutController()
         shortcuts.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("<Alt>Up"),
                                             action=Gtk.CallbackAction.new(lambda *_: self._go_up() or True)))
+        shortcuts.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("<Control>f"),
+                                            action=Gtk.CallbackAction.new(lambda *_: self._focus_search() or True)))
         self.add_controller(shortcuts)
         self._update_actions()
         self._render_state()
@@ -126,19 +144,24 @@ class RestorePage(Gtk.Box):
         return scroller
 
     def _build_search(self):
-        self._search = Gtk.SearchEntry(placeholder_text="Filter this folder", hexpand=True)
-        self._search.connect("search-changed", lambda *_: self._filter.changed(Gtk.FilterChange.DIFFERENT))
-        bar = Gtk.SearchBar(child=Adw.Clamp(child=self._search, maximum_size=480), key_capture_widget=self)
-        bar.connect_entry(self._search)
-        self._search_btn.bind_property("active", bar, "search-mode-enabled",
+        self._search = Gtk.SearchEntry(hexpand=True, search_delay=300)
+        self._search.connect("search-changed", lambda *_: self._search_changed())
+        self._searching = Adw.Spinner(visible=False, tooltip_text="Searching…")
+        self._found_label = label("", ("dim-label", "caption", "numeric"))
+        box = Gtk.Box(spacing=8)
+        box.append(self._search)
+        box.append(self._searching)
+        box.append(self._found_label)
+        self._search_bar = Gtk.SearchBar(child=Adw.Clamp(child=box, maximum_size=560), key_capture_widget=self)
+        self._search_bar.connect_entry(self._search)
+        self._search_btn.bind_property("active", self._search_bar, "search-mode-enabled",
                                        GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
-        return bar
+        self._search_bar.connect("notify::search-mode-enabled", lambda *_: self._search_changed())
+        return self._search_bar
 
     def _build_content(self):
         self._store = Gio.ListStore(item_type=Entry)
-        self._filter = Gtk.CustomFilter.new(self._matches)
-        filtered = Gtk.FilterListModel(model=self._store, filter=self._filter)
-        ordered = Gtk.SortListModel(model=filtered, sorter=Gtk.CustomSorter.new(_sort, None))
+        ordered = Gtk.SortListModel(model=self._store, sorter=Gtk.CustomSorter.new(_sort, None))
         self._model = Gtk.SingleSelection(model=ordered, autoselect=False, can_unselect=True)
 
         table = Gtk.ColumnView(model=self._model, css_classes=["data-table"])
@@ -223,14 +246,20 @@ class RestorePage(Gtk.Box):
     def _setup_name(self, item):
         box = Gtk.Box(spacing=8)
         box.append(Gtk.Image())
-        box.append(label("", ellipsize=Pango.EllipsizeMode.MIDDLE, hexpand=True))
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        text.append(label("", ellipsize=Pango.EllipsizeMode.MIDDLE))
+        text.append(label("", ("caption", "dim-label"), ellipsize=Pango.EllipsizeMode.MIDDLE))
+        box.append(text)
         item.set_child(box)
 
     def _bind_name(self, box, entry):
-        icon, name = box.get_first_child(), box.get_last_child()
+        icon, text = box.get_first_child(), box.get_last_child()
+        name, folder = text.get_first_child(), text.get_last_child()
         icon.set_from_gicon(entry.icon())
         name.set_label(entry.name)
-        name.set_tooltip_text(entry.name)
+        folder.set_visible(entry.folder is not None)
+        folder.set_label(f"in {entry.folder}" if entry.folder else "in this folder")
+        box.set_tooltip_text(entry.path if entry.folder is not None else entry.name)
 
     def _setup_value(self, item):
         item.set_child(label("", ("dim-label", "numeric"), xalign=1.0, margin_start=12))
@@ -241,10 +270,6 @@ class RestorePage(Gtk.Box):
     def _bind_mtime(self, cell, entry):
         cell.set_label(fmt_date(entry.mtime) if entry.mtime else "")
 
-    def _matches(self, entry):
-        text = self._search.get_text().strip().casefold()
-        return not text or text in entry.name.casefold()
-
     # Snapshots ---------------------------------------------------------------
 
     def set_backup(self, repo, password, explain):
@@ -253,6 +278,7 @@ class RestorePage(Gtk.Box):
             self._all = None
             self._snapshot = self._path = None
             self._listing = {}
+            self._searched = {}
             self._selected = {}
             self._update_actions()
         self._password, self._explain = password, explain
@@ -303,14 +329,22 @@ class RestorePage(Gtk.Box):
     def _snapshot_chosen(self, snapshot):
         self._snapshot = snapshot
         self._set_selection({})
+        if self._query is not None:
+            # Keep searching the same folder, to step back until the file turns up.
+            self._run_search(Query(self._query.text, self._query.folder))
+            return
         # Stay in the same folder, to compare versions of it across snapshots.
         self._open(self._path or _start_path(snapshot))
 
     # Browsing ----------------------------------------------------------------
 
-    def _open(self, path):
+    def _open(self, path, keep_text=False):
         self._path = path
-        self._search.set_text("")
+        self._end_search()
+        if not keep_text:
+            self._search.set_text("")
+        self._search.set_placeholder_text(f"Search {'everything' if path == '/' else os.path.basename(path)} "
+                                          "and the folders in it")
         self._render_crumbs()
         self._up.set_sensitive(path != "/")
         if self._ls_cancellable is not None:
@@ -329,6 +363,10 @@ class RestorePage(Gtk.Box):
         if key != (self._snapshot["id"], self._path):
             return   # the user moved on meanwhile
         self._ls_cancellable = None
+        if self._query is not None:
+            if nodes is not None:
+                self._listing[key] = [Entry(n) for n in nodes]
+            return   # searching instead; the folder is shown once that ends
         if error is not None:
             self._show_status("dialog-error-symbolic", "Couldn't Open This Folder", self._explain(error),
                               "Try Again", lambda: self._open(self._path))
@@ -396,6 +434,85 @@ class RestorePage(Gtk.Box):
         self._status_btn.set_label(button or "")
         self._status_action = action
         self._stack.set_visible_child_name("status")
+
+    # Searching ---------------------------------------------------------------
+
+    def _focus_search(self):
+        self._search_bar.set_search_mode(True)
+        self._search.grab_focus()
+
+    def _search_changed(self):
+        text = self._search.get_text().strip()
+        if not self._search_bar.get_search_mode() or not text:
+            if self._query is not None:
+                self._open(self._path)      # cleared or closed: back to the folder
+            return
+        if self._snapshot is None or self._password is None or self._path is None:
+            return
+        query = Query(text, self._path)
+        if not query.valid:
+            if self._query is not None:
+                self._open(self._path, keep_text=True)
+            self._found_label.set_label("Keep typing…")
+            return
+        self._run_search(query)
+
+    def _run_search(self, query):
+        self._stop_find()
+        self._query = query
+        key = (self._snapshot["id"], query.pattern)
+        if key in self._searched:
+            self._show_results(self._searched[key])
+            return
+        self._searching.set_visible(True)
+        if self._stack.get_visible_child_name() != "list":
+            self._show_loading()
+        self._find_cancellable = cancellable = Gio.Cancellable()
+
+        def done(data, error):
+            if cancellable is not self._find_cancellable:
+                return      # superseded
+            self._find_cancellable = None
+            self._searching.set_visible(False)
+            if error is not None:
+                self._found_label.set_label("")
+                if bad_pattern(error):
+                    self._show_status("system-search-symbolic", "Can't Search for That",
+                                      f"“{query.text}” isn't a valid pattern. Use * for any text and ? for one "
+                                      "character; put a \\ before [ to find it in names.")
+                else:
+                    self._show_status("dialog-error-symbolic", "Couldn't Search", self._explain(error),
+                                      "Try Again", lambda: self._run_search(query))
+                return
+            self._searched[key] = [Entry.found(n, query.folder) for n in query.results(data)]
+            self._show_results(self._searched[key])
+        self._restic.find(self._repo, self._password, self._snapshot["id"], query.pattern, done, cancellable)
+
+    def _show_results(self, entries):
+        query = self._query
+        where = "everything" if query.folder == "/" else describe_path(query.folder)
+        if not entries:
+            self._found_label.set_label("")
+            self._show_status("system-search-symbolic", "No Results",
+                              f"Nothing called “{query.text}” in {where} or the folders in it, in this snapshot. "
+                              "Older snapshots are on the timeline.")
+            return
+        shown = sorted(entries, key=lambda e: e.sort_key)[:MAX_RESULTS]
+        self._found_label.set_label(_plural(len(entries), "result") if len(shown) == len(entries)
+                                    else f"First {len(shown):,} of {len(entries):,}")
+        self._store.splice(0, self._store.get_n_items(), shown)
+        self._stack.set_visible_child_name("list")
+
+    def _stop_find(self):
+        if self._find_cancellable is not None:
+            self._find_cancellable.cancel()
+            self._find_cancellable = None
+        self._searching.set_visible(False)
+
+    def _end_search(self):
+        self._stop_find()
+        self._query = None
+        self._found_label.set_label("")
 
     # Selection ---------------------------------------------------------------
 
