@@ -1,9 +1,10 @@
-"""Browse a snapshot and get files back: in place, or as a copy somewhere else."""
+"""Browse a snapshot and get files back: in place, as a copy somewhere else, or just to look at."""
 
 import os
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango
 
+from ..backup.preview import prepare, preview_path, seal
 from ..backup.restore import RestoreJob, plan_copy, plan_in_place
 from ..backup.search import Query, bad_pattern
 from ..core.paths import describe_path
@@ -13,6 +14,10 @@ from .widgets import label
 
 PULSE_MS = 120
 MAX_RESULTS = 1000
+
+# Fetching a single file: (progress label, toast when cancelled, heading when it fails).
+SAVING = ("Saving “{}”…", "Saving stopped", "Couldn't Save the File")
+OPENING = ("Opening “{}”…", "Opening stopped", "Couldn't Open the File")
 
 
 def _plural(n, one, many=None):
@@ -45,6 +50,7 @@ class Entry(GObject.Object):
         self.size = node.get("size")
         self.mtime = parse_time(node.get("mtime"))
         self.link = node.get("type") == "symlink"
+        self.previewable = node.get("type") == "file"
         self.sort_key = (not self.is_dir, GLib.utf8_collate_key_for_filename(self.name, -1))
         self.folder = None      # for search results: where it is, below the searched folder
 
@@ -97,7 +103,7 @@ class RestorePage(Gtk.Box):
         self._selected = {}         # path → Entry, kept while moving between folders
         self._checks = []
         self._job = None
-        self._dump = None           # (cancellable, Gio.File) while saving a single file
+        self._dump = None           # (cancellable, target path, texts) while fetching a single file
         self._pulse = 0
         self._after_stop = None
         self._state_shown = True    # showing locked/loading/… instead of a folder
@@ -205,6 +211,10 @@ class RestorePage(Gtk.Box):
         self._clear_btn = Gtk.Button(label="Clear Selection", css_classes=["flat"])
         self._clear_btn.connect("clicked", lambda *_: self._set_selection({}))
         actions.append(self._clear_btn)
+        self._open_btn = Gtk.Button(label="Open", tooltip_text="Look at this version without restoring it: "
+                                    "opens a temporary copy (or double-click the file)")
+        self._open_btn.connect("clicked", lambda *_: self._preview(next(iter(self._selected.values()))))
+        actions.append(self._open_btn)
         self._download_btn = Gtk.Button(label="Save Copy…", tooltip_text="Save a copy somewhere else; "
                                         "nothing in the original location is changed")
         self._download_btn.connect("clicked", lambda *_: self._download())
@@ -398,6 +408,8 @@ class RestorePage(Gtk.Box):
             return
         if entry.is_dir:
             self._open(entry.path)
+        elif entry.previewable:
+            self._preview(entry)
         else:
             self._toggle(entry, entry.path not in self._selected)
             self._sync_checks()
@@ -551,6 +563,7 @@ class RestorePage(Gtk.Box):
         self._selection_label.set_label(f"{_plural(n, 'item')} selected" if n
                                         else "Select files and folders to restore")
         self._clear_btn.set_visible(n > 0)
+        self._open_btn.set_sensitive(n == 1 and not busy and next(iter(self._selected.values())).previewable)
         self._download_btn.set_sensitive(n > 0 and not busy)
         self._restore_btn.set_sensitive(n > 0 and not busy)
         self._timeline.set_sensitive(not busy)
@@ -610,7 +623,7 @@ class RestorePage(Gtk.Box):
     def _copy_to(self, paths, folder):
         target = folder.get_path()
         if target is None:
-            self._error("Can't Save There", "Choose a folder on this computer or a mounted drive.")
+            self._alert("Can't Save There", "Choose a folder on this computer or a mounted drive.")
             return
         message = f"Saved {_plural(len(paths), 'item')} to {describe_path(target)}"
         existing = [p for p in paths if os.path.lexists(os.path.join(target, os.path.basename(p)))]
@@ -655,24 +668,57 @@ class RestorePage(Gtk.Box):
         if ok:
             self._set_selection({})
             if job.warnings:
-                self._error(f"{message}, With Problems",
+                self._alert(f"{message}, With Problems",
                             f"{_plural(len(job.warnings), 'item')} couldn't be restored:\n\n"
                             + "\n".join(job.warnings[:8]) + ("\n…" if len(job.warnings) > 8 else ""))
             else:
                 self._toast(message, show)
         elif error:
-            self._error("Restore Failed", error)
+            self._alert("Restore Failed", error)
         else:
             self._toast("Restore stopped")
 
     def _save_file(self, entry, file):
         target = file.get_path()
         if target is None:
-            self._error("Can't Save There", "Choose a folder on this computer or a mounted drive.")
+            self._alert("Can't Save There", "Choose a folder on this computer or a mounted drive.")
             return
+        self._fetch(entry, target, SAVING, lambda: self._toast(f"Saved “{file.get_basename()}”", file))
+
+    def _preview(self, entry):
+        """Open the file as it was in this snapshot, from a temporary copy; nothing is restored."""
+        if self.busy or self._snapshot is None:
+            return
+        target = preview_path(self._snapshot["id"], entry.path)
+        if os.path.exists(target):
+            self._launch(target)    # fetched before; snapshots never change
+            return
+        try:
+            prepare(target)
+        except OSError as e:
+            self._alert(OPENING[2], str(e))
+            return
+
+        def fetched():
+            seal(target)
+            self._launch(target)
+        self._fetch(entry, target, OPENING, fetched)
+
+    def _launch(self, path):
+        def launched(launcher, result):
+            try:
+                launcher.launch_finish(result)
+            except GLib.Error as e:
+                if not e.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED):
+                    self._alert(OPENING[2], f"{e.message}\n\nSave Copy… gets you the file instead.")
+        Gtk.FileLauncher.new(Gio.File.new_for_path(path)).launch(self.get_root(), None, launched)
+
+    def _fetch(self, entry, target, texts, then):
+        """Write one file from the snapshot to `target`; call then() once it's there."""
+        doing, _stopped, failed = texts
         cancellable = Gio.Cancellable()
-        self._dump = (cancellable, file)
-        self._progress_label.set_label(f"Saving “{entry.name}”…")
+        self._dump = (cancellable, target, texts)
+        self._progress_label.set_label(doing.format(entry.name))
         self._pulse = GLib.timeout_add(PULSE_MS, lambda: self._progress.pulse() or True)
         self.get_root().get_application().hold()
         self._update_actions()
@@ -682,31 +728,30 @@ class RestorePage(Gtk.Box):
                 return   # cancelled; _cancel cleaned up
             if error is not None:
                 _remove(target)   # restic leaves an empty or partial file behind
-                self._error("Couldn't Save the File", self._explain(error))
+                self._alert(failed, self._explain(error))
             elif not self._stopped():
-                self._toast(f"Saved “{file.get_basename()}”", file)
+                then()
         self._restic.dump(self._repo, self._password, self._snapshot["id"], entry.path, target, done, cancellable)
 
     def _end_dump(self):
         if self._dump is None:
             return None
-        cancellable, file = self._dump
-        self._dump = None
+        dump, self._dump = self._dump, None
         GLib.source_remove(self._pulse)
         self.get_root().get_application().release()
         self._update_actions()
-        return cancellable, file
+        return dump
 
     def _cancel(self):
         if self._job is not None:
             self._job.cancel()
         elif self._dump is not None:
             # A cancelled query doesn't call back, so clean up here.
-            cancellable, file = self._end_dump()
+            cancellable, target, (_doing, stopped, _failed) = self._end_dump()
             cancellable.cancel()
-            _remove(file.get_path())
+            _remove(target)
             if not self._stopped():
-                self._toast("Saving stopped")
+                self._toast(stopped)
 
     @property
     def busy(self):
@@ -745,7 +790,7 @@ class RestorePage(Gtk.Box):
                           lambda *_: Gtk.FileLauncher.new(file).launch(self.get_root(), None, _launched))
         self._toasts.add_toast(toast)
 
-    def _error(self, heading, body):
+    def _alert(self, heading, body):
         dialog = Adw.AlertDialog(heading=heading, body=body)
         dialog.add_response("close", "Close")
         dialog.present(self)

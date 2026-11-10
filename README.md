@@ -49,6 +49,12 @@ and folders, in as many folders as you like, then:
   wherever you save it (handy for one PDF you deleted), anything else is copied
   into a folder you pick, each item under its own name.
 
+Just want to look at an old version, say your resume from two months ago?
+Double-click the file (or tick it and press **Open**): a temporary, read-only
+copy opens in the app for that kind of file, and nothing is restored or saved.
+The copies live in the app's cache folder and are deleted when you close the
+window.
+
 ## Storage
 
 | Backend | Repository | Notes |
@@ -125,7 +131,7 @@ Under `src/jungbackup/`:
 |---|---|
 | `app.py` | `Adw.Application`, autostart portal |
 | `ui/` | Dashboard and scheduler (`window.py`), restore view (`restore.py`, snapshot `timeline.py`), settings view (`prefs.py`), setup flow, password prompt, Cairo charts |
-| `backup/` | Running restic (`restic.py`; password via stdin), the backup job (`job.py`: init → backup → forget/prune, Déjà Dup-compatible flags), restoring (`restore.py`), `/proc` sampling of running restic/duplicity (`monitor.py`) |
+| `backup/` | Running restic (`restic.py`; password via stdin), the backup job (`job.py`: init → backup → forget/prune, Déjà Dup-compatible flags), restoring (`restore.py`), temporary copies to look at (`preview.py`), `/proc` sampling of running restic/duplicity (`monitor.py`) |
 | `storage/` | Storage backends: `local.py`, `sftp.py`, the shared interface in `base.py` |
 | `dejadup/` | Reading/writing Déjà Dup's GSettings / Flatpak keyfile, importing its settings, launching it |
 | `core/` | This app's settings, keyring, `$HOME`-style path tokens, formatting helpers |

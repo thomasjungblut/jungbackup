@@ -5,6 +5,7 @@ import os
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
+from ..backup import preview
 from ..backup.job import BackupJob
 from ..backup.monitor import ProcessMonitor
 from ..backup.restic import Restic
@@ -522,6 +523,7 @@ class Window(Adw.ApplicationWindow):
         if self.restore.busy:
             self.restore.confirm_stop(then=self.close)
             return True
+        preview.clear()     # done looking; don't keep copies around while running in the background
         if self.job is not None or (self.settings.configured and self.settings.periodic):
             # Keep running in the background for the schedule / the running job.
             self.set_visible(False)

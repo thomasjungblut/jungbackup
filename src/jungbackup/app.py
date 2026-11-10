@@ -8,6 +8,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
+from .backup import preview  # noqa: E402
 from .ui.window import Window  # noqa: E402
 
 APP_ID = "io.jungblut.JungBackup"
@@ -35,6 +36,7 @@ class Application(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        preview.clear()     # left behind by a crash
         css = Gtk.CssProvider()
         css.load_from_path(os.path.join(os.path.dirname(__file__), "ui", "style.css"))
         # Running from a source checkout: pick up the app icon from data/.
@@ -44,6 +46,10 @@ class Application(Adw.Application):
         Gtk.Window.set_default_icon_name(APP_ID)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def do_shutdown(self):
+        preview.clear()
+        Adw.Application.do_shutdown(self)
 
     def do_activate(self):
         win = self.get_active_window() or next(iter(self.get_windows()), None)

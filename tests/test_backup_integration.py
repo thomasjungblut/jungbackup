@@ -4,6 +4,7 @@ Each test gets a fresh, empty repository location; the flow mirrors the app:
 probe → init → back up → list snapshots → back up again, then browse and restore.
 """
 
+import os
 import socket
 import subprocess
 import uuid
@@ -11,8 +12,9 @@ import uuid
 import pytest
 
 from conftest import PASSWORD, wait_for
-from jungbackup.backup import search
+from jungbackup.backup import preview, search
 from jungbackup.backup.job import BackupJob
+from jungbackup.backup.preview import preview_path
 from jungbackup.backup.restore import RestoreJob, plan_copy, plan_in_place
 from jungbackup.core.settings import Settings
 from jungbackup.storage import EXISTING, NEW, UNREACHABLE, RcloneStorage, SftpStorage, for_repository, sftp
@@ -164,6 +166,13 @@ def test_browse_and_restore(restic, storage, source):
     target = out / "saved.pdf"
     _data, error = wait_for(lambda done: restic.dump(storage.repo, PASSWORD, sid, str(pdf), str(target), done))
     assert error is None and target.read_text() == "pdf\n"
+
+    # A temporary copy to look at, under its own name.
+    copy = preview_path(sid, str(pdf))
+    preview.prepare(copy)
+    _data, error = wait_for(lambda done: restic.dump(storage.repo, PASSWORD, sid, str(pdf), copy, done))
+    assert error is None and open(copy).read() == "pdf\n" and os.path.basename(copy) == pdf.name
+    preview.clear()
 
 
 def test_search_a_folder_and_below(restic, storage, source):
