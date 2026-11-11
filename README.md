@@ -5,6 +5,8 @@ is, how long the last run took, how many files changed, and live throughput,
 CPU and memory use while a backup runs. Restoring files and the settings are
 views of their own, out of the way until you need them.
 
+![Jung Backup's dashboard, a backup running, and a lost file found on the restore timeline](data/screenshots/demo.gif)
+
 It runs its own [restic](https://restic.net) backups and stays compatible with
 Déjà Dup: snapshots use the same tag (`deja-dup`), host grouping and retention
 flags, so either app can restore or prune the other's backups.
@@ -116,6 +118,13 @@ and an OpenSSH container started with podman, using a throwaway key and
 `known_hosts`. They're skipped when restic or podman is missing.
 
 `make help` lists all targets.
+
+`make demo` records the animation at the top of this page again
+(`data/screenshots/demo.gif`), after a change to the UI. The app runs in a
+bubblewrap sandbox with a made-up home folder and backup drive, on a headless
+compositor, so none of your files appear in it and no window pops up; the
+steps it walks through are in `build-aux/demo/play.py`. It needs `bwrap`,
+`mutter`, `ffmpeg` and restic.
 
 restic is looked up in this order: `$JUNGBACKUP_RESTIC`, `restic` on `PATH`, then the
 copy bundled inside the Déjà Dup Flatpak.

@@ -47,6 +47,10 @@ validate: ## Validate the desktop file and AppStream metainfo
 	desktop-file-validate data/$(APP_ID).desktop
 	appstreamcli validate --no-net --explain data/$(APP_ID).metainfo.xml
 
+.PHONY: demo
+demo: ## Record the README animation (data/screenshots/demo.gif) in a sandbox with made-up files
+	build-aux/demo/record.sh
+
 .PHONY: check
 check: lint validate ## Run all local checks
 
