@@ -197,3 +197,46 @@ def test_search_a_folder_and_below(restic, storage, source):
     assert find("nothing", source) == []
     _data, error = wait_for(lambda done: restic.find(storage.repo, PASSWORD, snapshot["id"], "[x", done))
     assert search.bad_pattern(error)
+
+
+def _verify(restic, settings, password=PASSWORD):
+    def start(done):
+        BackupJob(restic, settings, password, lambda job: None, done, create=False, check_only=True).start()
+    return wait_for(start, timeout=180)
+
+
+def test_backup_verifies_when_a_check_is_due(restic, storage, source):
+    settings = _settings(storage, source)
+    settings.check_days = 7
+    job, ok, error = _backup(restic, settings)
+    assert (ok, error) == (True, None)
+    assert job.check == (None, [])
+    settings.record_check(*job.check)
+    job, ok, _ = _backup(restic, settings)     # verified a moment ago: not due
+    assert ok and job.check is None
+
+
+def test_verify_finds_a_damaged_file(restic, tmp_path, source):
+    settings = Settings(repository=str(tmp_path / "repo"), includes=[str(source)], check_parts=1)
+    assert _backup(restic, settings)[1]
+    job, ok, _ = _verify(restic, settings)
+    assert ok and job.check == (None, [])
+
+    packs = sorted((tmp_path / "repo" / "data").rglob("*"))
+    pack = next(p for p in packs if p.is_file())
+    pack.chmod(0o600)
+    with open(pack, "r+b") as f:
+        f.seek(100)
+        f.write(b"XXXX")
+    job, ok, _ = _verify(restic, settings)
+    assert ok
+    damage, broken = job.check
+    assert damage.startswith("Verification found")
+    assert broken == [pack.name]
+
+
+def test_verify_without_a_repository_fails(restic, tmp_path, source):
+    settings = Settings(repository=str(tmp_path / "missing"), includes=[str(source)])
+    job, ok, error = _verify(restic, settings)
+    assert not ok and job.check is None
+    assert error

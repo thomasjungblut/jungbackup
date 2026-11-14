@@ -2,12 +2,13 @@
 
 from datetime import timedelta
 
-from gi.repository import Gtk
+from gi.repository import GLib, Gtk
 
 from ..core.util import fmt_ago, fmt_until, now, parse_time
 from .widgets import label
 
 STATES = ("good", "warning", "error", "accent")
+TROUBLESHOOTING = "https://restic.readthedocs.io/en/stable/077_troubleshooting.html"
 
 
 class Hero(Gtk.Box):
@@ -34,11 +35,16 @@ class Hero(Gtk.Box):
         failed = s.last_error and (last is None or (parse_time(s.last_attempt) or last) > last)
         overdue = s.periodic and s.next_backup_time and now() > s.next_backup_time + timedelta(days=1)
         if running:
-            state, icon, title = "accent", "view-refresh-symbolic", "Backing Up…"
+            title = running if isinstance(running, str) else "Backing Up…"
+            state, icon = "accent", "view-refresh-symbolic"
         elif last is None:
             state, icon, title = "error", "dialog-error-symbolic", "No Backups Yet"
+        elif s.check_damaged:
+            state, icon, title = "error", "dialog-error-symbolic", "Backup Is Damaged"
         elif failed:
             state, icon, title = "warning", "dialog-warning-symbolic", "Last Backup Failed"
+        elif s.check_suspect:
+            state, icon, title = "warning", "dialog-warning-symbolic", "Possible Damage Found"
         elif overdue:
             state, icon, title = "warning", "dialog-warning-symbolic", "Backup Overdue"
         else:
@@ -57,6 +63,18 @@ class Hero(Gtk.Box):
         else:
             parts.append("automatic backups are off")
         self._sub.set_label(" · ".join(parts))
-        self._error.set_visible(bool(failed) and not running)
-        self._error.set_label(s.last_error or "")
+        if running:
+            problem = ""
+        elif s.check_damaged:
+            problem = (GLib.markup_escape_text(s.check_error) + " A second check found the same errors. "
+                       f'<a href="{TROUBLESHOOTING}">How to repair it</a>')
+        elif failed:
+            problem = GLib.markup_escape_text(s.last_error or "")
+        elif s.check_suspect:
+            problem = (GLib.markup_escape_text(s.check_error)
+                       + " Checking again after the next backup, as this can be a passing read error.")
+        else:
+            problem = ""
+        self._error.set_visible(bool(problem))
+        self._error.set_markup(problem)
         self._backup_btn.set_sensitive(not running and can_back_up)

@@ -81,6 +81,7 @@ class Window(Adw.ApplicationWindow):
 
     def _build_actions(self):
         for name, cb in (("reimport", lambda *_: self.start_import()),
+                         ("verify", lambda *_: self.verify_now()),
                          ("open-deja-dup", lambda *_: open_deja_dup())):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", cb)
@@ -94,6 +95,7 @@ class Window(Adw.ApplicationWindow):
         for items in ((("Home", "win.show-page::backup"),
                        ("Restore Files", "win.show-page::restore"),
                        ("Backup Settings", "win.show-page::settings")),
+                      (("Verify Backup Now", "win.verify"),),
                       (("Re-Import from Déjà Dup…", "win.reimport"),
                        ("Open Déjà Dup", "win.open-deja-dup")),
                       (("About Jung Backup", "app.about"),
@@ -115,7 +117,8 @@ class Window(Adw.ApplicationWindow):
         self.pages.add_titled_with_icon(self.restore, "restore", "Restore", "document-revert-symbolic")
         self.settings_page = SettingsPage(self.dd, on_changed=self._on_settings_changed,
                                           on_change_location=lambda: self.start_setup("Change Location"),
-                                          on_forget_password=self._forget_password, toast=self.toast)
+                                          on_forget_password=self._forget_password, toast=self.toast,
+                                          on_verify=self.verify_now)
         self.pages.add_titled_with_icon(self.settings_page, "settings", "Settings", "emblem-system-symbolic")
 
         sidebar = Adw.ToolbarView()
@@ -475,6 +478,22 @@ class Window(Adw.ApplicationWindow):
         self.job.start()
         self._render_all()
 
+    def verify_now(self):
+        """Read back part of the backup now, without backing up first."""
+        if not self.settings.configured or self.job is not None or (self.activity and not self.activity.ours):
+            return
+        if self.password is None:
+            self.ask_password()
+            return
+        if not self.restic.available:
+            self.toast("restic is not installed")
+            return
+        self.job = BackupJob(self.restic, self.settings, self.password, self._on_job_update, self._on_job_done,
+                             create=False, check_only=True)
+        self.get_application().hold()
+        self.job.start()
+        self._render_all()
+
     def _stop_job(self):
         if self.job is not None:
             self.job.cancel()
@@ -486,6 +505,15 @@ class Window(Adw.ApplicationWindow):
     def _on_job_done(self, job, ok, error):
         self.job = None
         self.get_application().release()
+        if job.check is not None:
+            self._record_check(job, *job.check)
+        if job.check_only:
+            if not ok:
+                self.toast(error or "Verification stopped")
+            self.settings.save()
+            self._update_background_status()
+            self._render_all()
+            return
         if ok:
             self.settings.last_backup = now().isoformat()
             self.settings.last_error = ""
@@ -505,6 +533,19 @@ class Window(Adw.ApplicationWindow):
         self.settings.save()
         self._update_background_status()
         self.refresh()
+
+    def _record_check(self, job, damage, broken):
+        was_damaged = self.settings.check_damaged
+        self.settings.record_check(damage, broken)
+        if self.settings.check_damaged and not was_damaged:
+            self.toast("The backup is damaged")
+            self._notify("The backup is damaged", self.settings.check_error)
+        elif was_damaged and not self.settings.check_damaged:
+            self.toast("Verification found no more errors")
+        elif self.settings.check_suspect:
+            self.toast("Verification found errors, checking again after the next backup")
+        elif job.check_only:
+            self.toast("Backup verified, no errors found")
 
     def _notify(self, title, body):
         if self.is_visible():
@@ -626,6 +667,8 @@ class Window(Adw.ApplicationWindow):
 
     def _render_hero(self):
         running = self.job is not None or self.activity is not None
+        if running and self.job is not None and self.job.phase == "verifying":
+            running = "Verifying Backup…"
         self.hero.update(self.settings, running, self.restic.available)
 
     def _render_live(self):
@@ -634,7 +677,7 @@ class Window(Adw.ApplicationWindow):
                          snapshot_duration(latest) if latest else None)
 
     def _render_tiles(self):
-        self.tiles.update(self.snapshots, self.raw_stats, self.fs_info, self.settings.last_backup_time,
+        self.tiles.update(self.snapshots, self.raw_stats, self.fs_info, self.settings,
                           self.storage, self._fetching)
 
     def _render_config(self):

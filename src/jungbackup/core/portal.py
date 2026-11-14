@@ -77,6 +77,8 @@ def status_message(job, settings):
             return "Creating backup…"
         if job.phase == "cleaning-up":
             return "Removing old backups…"
+        if job.phase == "verifying":
+            return "Verifying backup…"
         if job.phase == "backing-up" and job.status:
             pct = min(float(job.status.get("percent_done") or 0), 1.0) * 100
             text = f"Backing up, {pct:.0f}%"

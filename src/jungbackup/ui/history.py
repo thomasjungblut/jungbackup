@@ -27,6 +27,7 @@ TILES = (
     ("duration", "Last Duration", "preferences-system-time-symbolic"),
     ("added", "Last Upload", "send-to-symbolic"),
     ("free", "Free Space", "drive-harddisk-system-symbolic"),
+    ("verified", "Last Verified", "emblem-ok-symbolic"),
 )
 FILE_KINDS = (("new", "New"), ("changed", "Changed"), ("unmodified", "Unchanged"))
 
@@ -42,7 +43,7 @@ def _data_added(summary):
 class StatTiles(Gtk.FlowBox):
     def __init__(self):
         super().__init__(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
-                         min_children_per_line=2, max_children_per_line=4,
+                         min_children_per_line=2, max_children_per_line=3,
                          column_spacing=12, row_spacing=12)
         self._tiles = {}
         for key, title, icon in TILES:
@@ -51,7 +52,7 @@ class StatTiles(Gtk.FlowBox):
             self.append(tile)
             tile.get_parent().set_focusable(False)
 
-    def update(self, snapshots, raw_stats, fs_info, last_backup, storage, fetching):
+    def update(self, snapshots, raw_stats, fs_info, settings, storage, fetching):
         """`snapshots` is None until loaded; `fs_info` is (size, free) or None."""
         t = self._tiles
         snaps = snapshots or []
@@ -88,6 +89,7 @@ class StatTiles(Gtk.FlowBox):
         else:
             t["snapshots"].set("—" if snapshots is None else "0", loading)
 
+        last_backup = settings.last_backup_time
         t["age"].set(fmt_ago(last_backup).replace(" ago", "") if last_backup else "Never",
                      fmt_date(last_backup) if last_backup else "")
 
@@ -96,6 +98,23 @@ class StatTiles(Gtk.FlowBox):
             t["free"].set(fmt_bytes(free), f"{100 * free / size:.0f}% of {fmt_bytes(size)}")
         else:
             t["free"].set("—", "unknown for this location" if storage.reachable() else "location not available")
+
+        t["verified"].set(*verified_tile(settings))
+
+
+def verified_tile(s):
+    """(value, subtitle) for the Last Verified tile."""
+    last = s.last_check_time
+    if s.check_damaged:
+        return "Damaged", s.check_error
+    if s.check_suspect:
+        return "Checking Again", "errors found, not yet confirmed"
+    if last is None:
+        return "Never", "turn it on in Settings" if s.check_days <= 0 else "after the next backup"
+    value = fmt_ago(last).replace(" ago", "")
+    if s.check_parts <= 1:
+        return value, "all data read back"
+    return value, f"part {(s.check_part - 2) % s.check_parts + 1} of {s.check_parts} read back"
 
 
 class FilesBreakdown(Gtk.Box):

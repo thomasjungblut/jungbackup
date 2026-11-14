@@ -12,6 +12,8 @@ KEEP = [30, 90, 182, 365, 730, 0]
 PACK_SIZES = [0, 32, 64, 128]          # restic refuses packs above 128 MiB
 COMPRESSION = {"auto": "Automatic", "off": "Off", "fastest": "Fastest", "better": "Better", "max": "Maximum"}
 READ_CONCURRENCY = [0, 4, 8]
+CHECK_DAYS = [0, 7, 14, 30]
+CHECK_PARTS = [20, 10, 4, 1]           # 5%, 10%, 25%, all of the data per check
 
 
 def _choices(values, current, label):
@@ -23,8 +25,9 @@ def _choices(values, current, label):
 class SettingsPage(Adw.Bin):
     """Built from the current settings by load(), which the window calls whenever it's shown or they change."""
 
-    def __init__(self, dd, on_changed, on_change_location, on_forget_password, toast):
+    def __init__(self, dd, on_changed, on_change_location, on_forget_password, toast, on_verify):
         super().__init__()
+        self._on_verify = on_verify
         self._dd = dd
         self._on_changed = on_changed
         self._on_change_location = on_change_location
@@ -60,6 +63,33 @@ class SettingsPage(Adw.Bin):
                             model=model, selected=keeps.index(settings.keep_days))
         keep.connect("notify::selected", lambda row, _p: self._set("keep_days", keeps[row.get_selected()]))
         schedule.add(keep)
+
+        # Verification -----------------------------------------------------
+        verify = Adw.PreferencesGroup(
+            title="Verification",
+            description="Reads stored data back after a backup to find damage early, before you need a restore")
+        verify_now = Gtk.Button(label="Verify Now", valign=Gtk.Align.CENTER, css_classes=["flat"])
+        verify_now.connect("clicked", lambda *_: self._on_verify())
+        verify.set_header_suffix(verify_now)
+        page.add(verify)
+
+        days, model = _choices(CHECK_DAYS, settings.check_days,
+                               lambda d: "Off" if d == 0 else f"Every {fmt_days(d)}")
+        check = Adw.ComboRow(title="Verify Automatically", model=model, selected=days.index(settings.check_days))
+        verify.add(check)
+
+        parts, model = _choices(CHECK_PARTS, settings.check_parts,
+                                lambda n: "All of it" if n <= 1 else f"{100 / n:g}%, all of it every {n} checks")
+        amount = Adw.ComboRow(title="Data Read per Check", model=model, selected=parts.index(settings.check_parts),
+                              subtitle="Downloaded from the backup location, which can cost money with cloud storage")
+        amount.set_sensitive(settings.check_days > 0)
+        amount.connect("notify::selected", lambda row, _p: self._set("check_parts", parts[row.get_selected()]))
+        verify.add(amount)
+
+        def check_changed(row, _p):
+            amount.set_sensitive(days[row.get_selected()] > 0)
+            self._set("check_days", days[row.get_selected()])
+        check.connect("notify::selected", check_changed)
 
         # Location ---------------------------------------------------------
         location = Adw.PreferencesGroup(title="Storage Location")

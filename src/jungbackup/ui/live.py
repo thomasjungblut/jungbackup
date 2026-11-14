@@ -14,7 +14,8 @@ from ..core.paths import describe_path
 from ..core.util import fmt_bytes, fmt_count, fmt_duration, fmt_rate
 from .widgets import Metric, MetricRow, label
 
-PHASES = {"creating": "Creating Backup…", "backing-up": "Backing Up…", "cleaning-up": "Removing Old Backups…"}
+PHASES = {"creating": "Creating Backup…", "backing-up": "Backing Up…", "cleaning-up": "Removing Old Backups…",
+          "verifying": "Verifying Backup…"}
 
 
 def fmt_ms(ms):

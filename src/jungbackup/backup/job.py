@@ -107,10 +107,26 @@ def _signal_restic_descendants(root_pid, sig):
     return hit
 
 
-class BackupJob:
-    """init (if needed) → backup → forget old snapshots."""
+def check_damage(summary):
+    """What `restic check` found, from its JSON summary; None when it found nothing."""
+    errors = int((summary or {}).get("num_errors") or 0)
+    if not errors:
+        return None
+    broken = len((summary or {}).get("broken_packs") or [])
+    text = f"Verification found {errors} error{'s' if errors != 1 else ''}"
+    if not broken:
+        return text + "."
+    return text + f" in {broken} damaged file{'s' if broken != 1 else ''} of the backup. " \
+        "Files stored in them can't be restored."
 
-    def __init__(self, restic, settings, password, on_update, on_done, create=True):
+
+class BackupJob:
+    """init (if needed) → backup → forget old snapshots → verify, when a check is due.
+
+    With check_only it just verifies the backup that's there.
+    """
+
+    def __init__(self, restic, settings, password, on_update, on_done, create=True, check_only=False):
         self._restic = restic
         self._settings = settings
         self._storage = for_repository(settings.repository)
@@ -125,6 +141,9 @@ class BackupJob:
         self.summary = None
         self.started = time.time()
         self.warnings = []
+        self.check_only = check_only
+        self.check = None           # (damage or None, broken pack IDs) once a check ran to the end
+        self._check_summary = None
 
     def start(self):
         self._storage.probe(self._restic, self._after_probe)
@@ -133,7 +152,7 @@ class BackupJob:
         if self.cancelled:
             self._finish(False, None)
         elif state == EXISTING:
-            self._backup()
+            self._check() if self.check_only else self._backup()
         elif state == NEW and self._create:
             self._set_phase("creating")
             self._restic.init(self._settings.repository, self._password, self._after_init)
@@ -210,7 +229,7 @@ class BackupJob:
         if self._settings.keep_days > 0:
             self._forget()
         else:
-            self._finish(True, None)
+            self._maybe_check()
 
     def _forget(self):
         host = GLib.get_host_name()
@@ -228,7 +247,52 @@ class BackupJob:
         # Like Déjà Dup, cleaning up is best effort; the backup itself succeeded.
         if status not in (0,) and not self.cancelled:
             self.warnings.append(f"Old backups were not cleaned up: {self._storage.explain(error)}")
-        self._finish(True, None)
+        if self.cancelled:
+            self._finish(True, None)
+        else:
+            self._maybe_check()
+
+    def _maybe_check(self):
+        if self._settings.check_due:
+            self._check()
+        else:
+            self._finish(True, None)
+
+    def _check(self):
+        args = ["check", *self._settings.check_subset()]
+        self._set_phase("verifying")
+        try:
+            self._job = self._restic.stream(self._settings.repository, self._password, args,
+                                            self._on_check_message, self._after_check)
+        except GLib.Error as e:
+            self._check_failed(f"Could not start restic: {e.message}")
+
+    def _on_check_message(self, msg):
+        if msg.get("message_type") == "summary":
+            self._check_summary = msg
+
+    def _after_check(self, status, error):
+        self._job = None
+        if self.cancelled:
+            # Stopping a check doesn't undo the backup before it.
+            self._finish(not self.check_only, None)
+            return
+        damage = check_damage(self._check_summary)
+        if status == 0 or damage:
+            self.check = (damage, (self._check_summary or {}).get("broken_packs") or [])
+            self._finish(True, None)
+        elif status == EXIT_LOCKED:
+            self._check_failed("The backup is in use by another program (maybe Déjà Dup).")
+        else:
+            self._check_failed(self._storage.explain(error) if error else f"restic exited with status {status}")
+
+    def _check_failed(self, reason):
+        """The check couldn't run to the end; that says nothing about the backup, so try again next time."""
+        if self.check_only:
+            self._finish(False, f"The backup could not be verified: {reason}")
+        else:
+            self.warnings.append(f"The backup could not be verified: {reason}")
+            self._finish(True, None)
 
     def _finish(self, ok, error):
         self.phase = "done"
