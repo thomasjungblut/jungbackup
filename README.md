@@ -161,7 +161,4 @@ make flatpak-lint     # Flathub's linter, same checks as its CI
 make flatpak-uninstall
 ```
 
-Inside the sandbox the live view only sees restic processes this app
-started. Déjà Dup runs in its own sandbox, so its backups show up after they
-finish, not while they run.
 

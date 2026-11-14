@@ -69,29 +69,6 @@ class Application(Adw.Application):
                         license_type=Gtk.License.APACHE_2_0, website="https://github.com/thomasjungblut/jungbackup").present(self.get_active_window())
 
 
-def request_autostart(window, enabled):
-    """Ask the Background portal to start us at login (Flatpak only)."""
-    if not os.path.exists("/.flatpak-info"):
-        return
-    try:
-        gi.require_version("Xdp", "1.0")
-        gi.require_version("XdpGtk4", "1.0")
-        from gi.repository import Xdp, XdpGtk4
-    except (ImportError, ValueError):
-        return
-    portal = Xdp.Portal.new()
-    parent = XdpGtk4.parent_new_gtk(window) if window is not None else None
-    flags = Xdp.BackgroundFlags.AUTOSTART if enabled else Xdp.BackgroundFlags.NONE
-
-    def done(portal, result):
-        try:
-            portal.request_background_finish(result)
-        except Exception:  # denied by the user, or no portal available
-            pass
-
-    portal.request_background(parent, "Run scheduled backups", ["jungbackup", "--background"], flags, None, done)
-
-
 def main():
     try:
         locale.setlocale(locale.LC_ALL, "")

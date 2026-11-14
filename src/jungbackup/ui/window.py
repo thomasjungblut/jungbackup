@@ -11,6 +11,7 @@ from ..backup.monitor import ProcessMonitor
 from ..backup.restic import Restic
 from ..core import google, keyring
 from ..core.paths import describe_path
+from ..core.portal import BackgroundStatus, request_autostart, status_message
 from ..core.settings import Settings
 from ..core.util import fmt_days, now, parse_time, snapshot_duration
 from ..dejadup.config import DejaDupConfig
@@ -50,6 +51,8 @@ class Window(Adw.ApplicationWindow):
         self._monitor = ProcessMonitor()
         self._was_active = False
         self._sign_in = None
+        self._bg_status = BackgroundStatus()
+        self._bg_phase = None
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
@@ -305,7 +308,6 @@ class Window(Adw.ApplicationWindow):
         wanted = self.settings.configured and self.settings.periodic
         if wanted != getattr(self, "_autostart", None):
             self._autostart = wanted
-            from ..app import request_autostart
             request_autostart(self if self.get_visible() else None, wanted)
 
     def _forget_password(self):
@@ -501,6 +503,7 @@ class Window(Adw.ApplicationWindow):
         else:
             self.toast("Backup stopped")
         self.settings.save()
+        self._update_background_status()
         self.refresh()
 
     def _notify(self, title, body):
@@ -548,7 +551,16 @@ class Window(Adw.ApplicationWindow):
         if self._was_active and not active:
             self.refresh()   # a backup (ours or Déjà Dup's) just finished
         self._was_active = active
+        self._update_background_status()
         return GLib.SOURCE_CONTINUE
+
+    def _update_background_status(self):
+        """The line GNOME's Background Apps menu shows under the app; progress is rate-limited, phase changes aren't."""
+        job = self.job
+        phase = None if job is None else ("stopping" if job.cancelled else job.phase)
+        urgent = phase != self._bg_phase
+        self._bg_phase = phase
+        self._bg_status.update(status_message(job, self.settings), urgent=urgent)
 
     def _slow_tick(self):
         if self.is_visible() and self.settings.configured:
