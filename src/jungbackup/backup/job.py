@@ -4,6 +4,7 @@ For compatibility, snapshots use the same tag, host and grouping flags as
 Déjà Dup, so either app can restore and prune backups made by the other.
 """
 
+import json
 import os
 import signal
 import time
@@ -11,6 +12,7 @@ import time
 from gi.repository import GLib
 
 from ..core.paths import expand_path
+from ..core.settings import CheckResult
 from ..storage import EXISTING, NEW, OCCUPIED, for_repository
 from .restic import EXIT_INCOMPLETE, EXIT_LOCKED, pattern_literal
 
@@ -107,8 +109,21 @@ def _signal_restic_descendants(root_pid, sig):
     return hit
 
 
+# restic's own repair advice, which `check` prints as errors too; the Verify page gives its own.
+_ADVICE = ("The repository contains damaged pack files", "The repository is damaged and must be repaired",
+           "Damaged pack files can be caused", "restic repair ", "If wanted, you can run", "Run `restic")
+# What restic exits with once check has looked at the data and found errors; any other fatal error means
+# check didn't get that far (a lock it couldn't read or write, the connection dropped).
+_DAMAGE_EXIT = "repository contains errors"
+
+
+def _not_about_the_data(text):
+    """Retries and lock files are reported as errors too, but say nothing about the stored data."""
+    return "<lock/" in text or "returned error, retrying after" in text
+
+
 def check_damage(summary):
-    """What `restic check` found, from its JSON summary; None when it found nothing."""
+    """One-line summary of the errors in `restic check`'s JSON summary; None when it counted none."""
     errors = int((summary or {}).get("num_errors") or 0)
     if not errors:
         return None
@@ -118,6 +133,59 @@ def check_damage(summary):
         return text + "."
     return text + f" in {broken} damaged file{'s' if broken != 1 else ''} of the backup. " \
         "Files stored in them can't be restored."
+
+
+def check_findings(stderr):
+    """restic check's error messages from its --json stderr, without its advice and repeats.
+
+    The fatal error it exits with isn't one of them, nor are retries and lock problems.
+    """
+    found = []
+    for line in (stderr or "").splitlines():
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict) or msg.get("message_type") != "error":
+            continue
+        raw = str(msg.get("message") or "").rstrip()
+        text = raw.strip()
+        if not text or text.startswith(_ADVICE) or _not_about_the_data(text):
+            continue
+        if raw.startswith(" ") and found and found[-1].endswith(":"):
+            found[-1] += " " + text     # "error for tree abc:" and its details come as separate messages
+        elif text not in found:
+            found.append(text)
+    return found
+
+
+def _exit_message(stderr):
+    for line in reversed((stderr or "").splitlines()):
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("message_type") == "exit_error":
+            return str(msg.get("message") or "")
+    return None
+
+
+def check_result(summary, stderr):
+    """CheckResult for a check that found damage, or None when it found none or couldn't look.
+
+    restic writes a summary counting one error even when it couldn't start, so the summary alone
+    isn't damage: it takes restic's error messages or damaged packs, and its "contains errors" exit.
+    """
+    summary = summary or {}
+    findings = check_findings(stderr)
+    broken = tuple(summary.get("broken_packs") or ())
+    exit_message = _exit_message(stderr)
+    if (not findings and not broken) or (exit_message is not None and _DAMAGE_EXIT not in exit_message):
+        return None
+    hints = tuple(h for key, h in (("suggest_repair_index", "repair-index"), ("suggest_prune", "prune"))
+                  if summary.get(key))
+    errors = max(int(summary.get("num_errors") or 0), 1)
+    return CheckResult(check_damage({**summary, "num_errors": errors}), errors, broken, tuple(findings), hints)
 
 
 class BackupJob:
@@ -142,7 +210,10 @@ class BackupJob:
         self.started = time.time()
         self.warnings = []
         self.check_only = check_only
-        self.check = None           # (damage or None, broken pack IDs) once a check ran to the end
+        self.ran_check = False      # a check ran to the end; then self.check is what it found
+        self.check = None           # CheckResult, or None for a clean check
+        self.check_failure = None   # why a check couldn't run to the end
+        self.check_read = settings.next_check_read()   # what the check reads: "3/20" or "all"
         self._check_summary = None
 
     def start(self):
@@ -260,6 +331,7 @@ class BackupJob:
 
     def _check(self):
         args = ["check", *self._settings.check_subset()]
+        self.check_read = self._settings.next_check_read()
         self._set_phase("verifying")
         try:
             self._job = self._restic.stream(self._settings.repository, self._password, args,
@@ -277,9 +349,9 @@ class BackupJob:
             # Stopping a check doesn't undo the backup before it.
             self._finish(not self.check_only, None)
             return
-        damage = check_damage(self._check_summary)
-        if status == 0 or damage:
-            self.check = (damage, (self._check_summary or {}).get("broken_packs") or [])
+        result = check_result(self._check_summary, error.details if error else "")
+        if status == 0 or result is not None:
+            self.ran_check, self.check = True, result
             self._finish(True, None)
         elif status == EXIT_LOCKED:
             self._check_failed("The backup is in use by another program (maybe Déjà Dup).")
@@ -288,6 +360,7 @@ class BackupJob:
 
     def _check_failed(self, reason):
         """The check couldn't run to the end; that says nothing about the backup, so try again next time."""
+        self.check_failure = reason
         if self.check_only:
             self._finish(False, f"The backup could not be verified: {reason}")
         else:
@@ -295,5 +368,7 @@ class BackupJob:
             self._finish(True, None)
 
     def _finish(self, ok, error):
+        if self.check_only and not ok and error and not self.cancelled and self.check_failure is None:
+            self.check_failure = error   # e.g. the location wasn't reachable, so check never started
         self.phase = "done"
         self._on_done(self, ok, error)

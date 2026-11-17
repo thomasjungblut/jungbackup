@@ -210,17 +210,17 @@ def test_backup_verifies_when_a_check_is_due(restic, storage, source):
     settings.check_days = 7
     job, ok, error = _backup(restic, settings)
     assert (ok, error) == (True, None)
-    assert job.check == (None, [])
-    settings.record_check(*job.check)
+    assert job.ran_check and job.check is None
+    settings.record_check(job.check)
     job, ok, _ = _backup(restic, settings)     # verified a moment ago: not due
-    assert ok and job.check is None
+    assert ok and not job.ran_check
 
 
 def test_verify_finds_a_damaged_file(restic, tmp_path, source):
     settings = Settings(repository=str(tmp_path / "repo"), includes=[str(source)], check_parts=1)
     assert _backup(restic, settings)[1]
     job, ok, _ = _verify(restic, settings)
-    assert ok and job.check == (None, [])
+    assert ok and job.ran_check and job.check is None
 
     packs = sorted((tmp_path / "repo" / "data").rglob("*"))
     pack = next(p for p in packs if p.is_file())
@@ -230,13 +230,28 @@ def test_verify_finds_a_damaged_file(restic, tmp_path, source):
         f.write(b"XXXX")
     job, ok, _ = _verify(restic, settings)
     assert ok
-    damage, broken = job.check
-    assert damage.startswith("Verification found")
-    assert broken == [pack.name]
+    assert job.check.damage.startswith("Verification found")
+    assert job.check.broken == (pack.name,)
+    assert any("ciphertext verification failed" in f for f in job.check.findings)
+    assert not any(f.startswith("restic repair") for f in job.check.findings)   # its advice is left out
 
 
 def test_verify_without_a_repository_fails(restic, tmp_path, source):
     settings = Settings(repository=str(tmp_path / "missing"), includes=[str(source)])
     job, ok, error = _verify(restic, settings)
-    assert not ok and job.check is None
-    assert error
+    assert not ok and not job.ran_check
+    assert error and job.check_failure
+
+
+def test_verify_that_cannot_lock_is_not_damage(restic, tmp_path, source):
+    """restic counts a fatal error in its summary; that alone must not mark the backup damaged."""
+    settings = Settings(repository=str(tmp_path / "repo"), includes=[str(source)], check_parts=1)
+    assert _backup(restic, settings)[1]
+    locks = tmp_path / "repo" / "locks"
+    locks.chmod(0o500)
+    try:
+        job, ok, error = _verify(restic, settings)
+    finally:
+        locks.chmod(0o700)
+    assert not ok and not job.ran_check and job.check is None
+    assert job.check_failure and "lock" in job.check_failure

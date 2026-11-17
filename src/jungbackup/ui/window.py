@@ -26,6 +26,7 @@ from .prefs import SettingsPage
 from .restore import RestorePage
 from .setup import SetupDialog
 from .summary import SettingsSummary
+from .verify import VerifyPage
 from .welcome import WelcomePage
 
 STATS_CACHE = os.path.join(GLib.get_user_cache_dir(), "jungbackup", "stats.json")
@@ -94,6 +95,7 @@ class Window(Adw.ApplicationWindow):
         menu = Gio.Menu()
         for items in ((("Home", "win.show-page::backup"),
                        ("Restore Files", "win.show-page::restore"),
+                       ("Verification", "win.show-page::verify"),
                        ("Backup Settings", "win.show-page::settings")),
                       (("Verify Backup Now", "win.verify"),),
                       (("Re-Import from Déjà Dup…", "win.reimport"),
@@ -115,6 +117,9 @@ class Window(Adw.ApplicationWindow):
         self.pages.add_titled_with_icon(self._build_dashboard(), "backup", "Backup",
                                         "io.jungblut.JungBackup-symbolic")
         self.pages.add_titled_with_icon(self.restore, "restore", "Restore", "document-revert-symbolic")
+        self.verify_page = VerifyPage(on_verify=self.verify_now, toast=self.toast,
+                                      on_settings=lambda: self.pages.set_visible_child_name("settings"))
+        self.pages.add_titled_with_icon(self.verify_page, "verify", "Verify", "security-high-symbolic")
         self.settings_page = SettingsPage(self.dd, on_changed=self._on_settings_changed,
                                           on_change_location=lambda: self.start_setup("Change Location"),
                                           on_forget_password=self._forget_password, toast=self.toast,
@@ -189,9 +194,9 @@ class Window(Adw.ApplicationWindow):
                       margin_top=18, margin_bottom=32, margin_start=16, margin_end=16)
         clamp.set_child(box)
 
-        self.hero = Hero(on_backup=self.backup_now)
+        self.hero = Hero(on_backup=self.backup_now, on_details=self.show_verify)
         self.live = LiveCard(on_cancel=self._stop_job)
-        self.tiles = StatTiles()
+        self.tiles = StatTiles(on_activate={"verified": self.show_verify})
         self.breakdown = FilesBreakdown()
         self.charts = HistoryCharts()
         self.snapshot_list = SnapshotList()
@@ -492,7 +497,11 @@ class Window(Adw.ApplicationWindow):
                              create=False, check_only=True)
         self.get_application().hold()
         self.job.start()
+        self.pages.set_visible_child_name("backup")    # its live card shows the progress
         self._render_all()
+
+    def show_verify(self):
+        self.pages.set_visible_child_name("verify")
 
     def _stop_job(self):
         if self.job is not None:
@@ -505,8 +514,10 @@ class Window(Adw.ApplicationWindow):
     def _on_job_done(self, job, ok, error):
         self.job = None
         self.get_application().release()
-        if job.check is not None:
-            self._record_check(job, *job.check)
+        if job.ran_check:
+            self._record_check(job, job.check)
+        elif job.check_failure:
+            self.settings.record_check_failure(job.check_failure)
         if job.check_only:
             if not ok:
                 self.toast(error or "Verification stopped")
@@ -534,9 +545,9 @@ class Window(Adw.ApplicationWindow):
         self._update_background_status()
         self.refresh()
 
-    def _record_check(self, job, damage, broken):
+    def _record_check(self, job, result):
         was_damaged = self.settings.check_damaged
-        self.settings.record_check(damage, broken)
+        self.settings.record_check(result)
         if self.settings.check_damaged and not was_damaged:
             self.toast("The backup is damaged")
             self._notify("The backup is damaged", self.settings.check_error)
@@ -589,6 +600,7 @@ class Window(Adw.ApplicationWindow):
         if active or self._was_active:
             self._render_live()
             self._render_hero()
+            self._render_verify()
         if self._was_active and not active:
             self.refresh()   # a backup (ours or Déjà Dup's) just finished
         self._was_active = active
@@ -654,6 +666,7 @@ class Window(Adw.ApplicationWindow):
         self._render_hero()
         self._render_live()
         self._render_tiles()
+        self._render_verify()
         latest = self._latest()
         self.breakdown.update(latest)
         self.charts.update(self.snapshots)
@@ -670,6 +683,14 @@ class Window(Adw.ApplicationWindow):
         if running and self.job is not None and self.job.phase == "verifying":
             running = "Verifying Backup…"
         self.hero.update(self.settings, running, self.restic.available)
+
+    def _render_verify(self):
+        s = self.settings
+        verifying = self.job is not None and (self.job.check_only or self.job.phase == "verifying")
+        can_verify = (self.restic.available and self.job is None
+                      and (self.activity is None or self.activity.ours))
+        self.verify_page.update(s, verifying, can_verify)
+        self.pages.get_page(self.verify_page).set_needs_attention(s.check_damaged or s.check_suspect)
 
     def _render_live(self):
         latest = self._latest()

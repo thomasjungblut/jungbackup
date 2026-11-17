@@ -12,6 +12,7 @@ from gi.repository import Adw, Gtk, Pango
 from ..backup.monitor import NUM_CPUS, RATE_WINDOW, WAIT_WINDOW, moving_average
 from ..core.paths import describe_path
 from ..core.util import fmt_bytes, fmt_count, fmt_duration, fmt_rate
+from .verify import fmt_read_of_data
 from .widgets import Metric, MetricRow, label
 
 PHASES = {"creating": "Creating Backup…", "backing-up": "Backing Up…", "cleaning-up": "Removing Old Backups…",
@@ -220,9 +221,14 @@ class LiveCard(Gtk.Revealer):
         self._cancel_btn.set_visible(job is not None)
         self._cancel_btn.set_sensitive(job is None or not job.cancelled)
 
+        verifying = job is not None and (job.check_only or job.phase == "verifying")
         if job is not None and job.cancelled:
-            self._title.set_label("Stopping Backup…")
+            self._title.set_label("Stopping Verification…" if verifying else "Stopping Backup…")
             self._sub.set_label("Waiting for restic to shut down, this can take a moment")
+            started = job.started
+        elif verifying:
+            self._title.set_label("Verifying Backup…")
+            self._sub.set_label(f"Reading back {fmt_read_of_data(job.check_read)} from {storage_label}")
             started = job.started
         elif job is not None:
             self._title.set_label(PHASES.get(job.phase, "Preparing…"))
@@ -267,5 +273,7 @@ class LiveCard(Gtk.Revealer):
             self._progress_text.set_label(f"Estimated from the last backup, which took {fmt_duration(typical)}")
             return f"~{fmt_duration(max(typical - elapsed, 0))}"
         self._progress.pulse()
-        self._progress_text.set_label("")
+        verifying = job is not None and (job.check_only or job.phase == "verifying")
+        # restic check reports no progress in its JSON mode, only what it found at the end.
+        self._progress_text.set_label("restic doesn't report progress while verifying" if verifying else "")
         return "—"

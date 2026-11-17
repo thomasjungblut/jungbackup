@@ -16,6 +16,29 @@
   padding: 14px 16px;
 }
 
+/* A tile, or the Verify page's status card, for something at risk: the whole card takes the color. */
+.stat-tile.error,
+.verify-status.error {
+  background-color: var(--error-bg-color);
+  color: var(--error-fg-color);
+}
+
+.stat-tile.warning,
+.verify-status.warning {
+  background-color: var(--warning-bg-color);
+  color: var(--warning-fg-color);
+}
+
+.stat-tile.error .dim-label,
+.stat-tile.warning .dim-label { opacity: 0.8; }
+
+.verify-status.error .hero-icon,
+.verify-status.warning .hero-icon { color: inherit; }
+
+.findings {
+  padding: 14px 16px;
+}
+
 .stat-value {
   font-size: 1.55em;
   font-weight: 700;

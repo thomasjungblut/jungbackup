@@ -80,14 +80,19 @@ class SettingsPage(Adw.Bin):
 
         parts, model = _choices(CHECK_PARTS, settings.check_parts,
                                 lambda n: "All of it" if n <= 1 else f"{100 / n:g}%, all of it every {n} checks")
-        amount = Adw.ComboRow(title="Data Read per Check", model=model, selected=parts.index(settings.check_parts),
-                              subtitle="Downloaded from the backup location, which can cost money with cloud storage")
-        amount.set_sensitive(settings.check_days > 0)
+        amount = Adw.ComboRow(title="Data Read per Check", model=model, selected=parts.index(settings.check_parts))
+
+        def show_amount(automatic):
+            amount.set_sensitive(automatic)
+            amount.set_subtitle("Downloaded from the backup location, which can cost money with cloud storage"
+                                if automatic else "All of it: with automatic verification off, Verify Now "
+                                                  "reads the whole backup")
+        show_amount(settings.check_days > 0)
         amount.connect("notify::selected", lambda row, _p: self._set("check_parts", parts[row.get_selected()]))
         verify.add(amount)
 
         def check_changed(row, _p):
-            amount.set_sensitive(days[row.get_selected()] > 0)
+            show_amount(days[row.get_selected()] > 0)
             self._set("check_days", days[row.get_selected()])
         check.connect("notify::selected", check_changed)
 

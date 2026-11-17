@@ -41,16 +41,24 @@ def _data_added(summary):
 
 
 class StatTiles(Gtk.FlowBox):
-    def __init__(self):
+    def __init__(self, on_activate=None):
+        """`on_activate` maps tile keys to what clicking that tile does, e.g. opening a page."""
         super().__init__(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                          min_children_per_line=2, max_children_per_line=3,
                          column_spacing=12, row_spacing=12)
         self._tiles = {}
+        actions = on_activate or {}
         for key, title, icon in TILES:
             tile = StatTile(title, icon)
             self._tiles[key] = tile
             self.append(tile)
-            tile.get_parent().set_focusable(False)
+            child = tile.get_parent()
+            child.set_focusable(key in actions)
+            if key in actions:
+                tile.add_css_class("activatable")
+                tile.set_cursor_from_name("pointer")
+                child.activate_action = actions[key]
+        self.connect("child-activated", lambda _box, child: getattr(child, "activate_action", lambda: None)())
 
     def update(self, snapshots, raw_stats, fs_info, settings, storage, fetching):
         """`snapshots` is None until loaded; `fs_info` is (size, free) or None."""
@@ -99,21 +107,30 @@ class StatTiles(Gtk.FlowBox):
         else:
             t["free"].set("—", "unknown for this location" if storage.reachable() else "location not available")
 
-        t["verified"].set(*verified_tile(settings))
+        value, sub = verified_tile(settings)
+        t["verified"].set(value, sub, "error" if settings.check_damaged else
+                          "warning" if settings.check_suspect else None)
+
+
+def _errors(s):
+    return f"{s.check_errors or 1} error{'s' if (s.check_errors or 1) != 1 else ''}"
 
 
 def verified_tile(s):
     """(value, subtitle) for the Last Verified tile."""
     last = s.last_check_time
     if s.check_damaged:
-        return "Damaged", s.check_error
+        return "Damaged", f"{_errors(s)} confirmed · see details"
     if s.check_suspect:
-        return "Checking Again", "errors found, not yet confirmed"
+        return "Checking Again", f"{_errors(s)} found, not yet confirmed"
     if last is None:
         return "Never", "turn it on in Settings" if s.check_days <= 0 else "after the next backup"
     value = fmt_ago(last).replace(" ago", "")
-    if s.check_parts <= 1:
+    if s.check_read == "all" or (not s.check_read and s.check_parts <= 1):
         return value, "all data read back"
+    if s.check_read:
+        part, _, parts = s.check_read.partition("/")
+        return value, f"part {part} of {parts} read back"
     return value, f"part {(s.check_part - 2) % s.check_parts + 1} of {s.check_parts} read back"
 
 

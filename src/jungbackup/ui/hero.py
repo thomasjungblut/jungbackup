@@ -8,11 +8,11 @@ from ..core.util import fmt_ago, fmt_until, now, parse_time
 from .widgets import label
 
 STATES = ("good", "warning", "error", "accent")
-TROUBLESHOOTING = "https://restic.readthedocs.io/en/stable/077_troubleshooting.html"
+DETAILS = "jungbackup:verify"
 
 
 class Hero(Gtk.Box):
-    def __init__(self, on_backup):
+    def __init__(self, on_backup, on_details):
         super().__init__(spacing=18, css_classes=["card", "hero"])
         self._icon = Gtk.Image(pixel_size=48, valign=Gtk.Align.CENTER, css_classes=["hero-icon"])
         self.append(self._icon)
@@ -20,6 +20,7 @@ class Hero(Gtk.Box):
         self._title = label("", ("title-2",), wrap=True)
         self._sub = label("", ("dim-label",), wrap=True)
         self._error = label("", ("caption", "error"), wrap=True, visible=False, selectable=True)
+        self._error.connect("activate-link", lambda _l, uri: uri == DETAILS and (on_details() or True))
         text.append(self._title)
         text.append(self._sub)
         text.append(self._error)
@@ -67,12 +68,13 @@ class Hero(Gtk.Box):
             problem = ""
         elif s.check_damaged:
             problem = (GLib.markup_escape_text(s.check_error) + " A second check found the same errors. "
-                       f'<a href="{TROUBLESHOOTING}">How to repair it</a>')
+                       f'<a href="{DETAILS}">See what was found and how to repair it</a>')
         elif failed:
             problem = GLib.markup_escape_text(s.last_error or "")
         elif s.check_suspect:
             problem = (GLib.markup_escape_text(s.check_error)
-                       + " Checking again after the next backup, as this can be a passing read error.")
+                       + " Checking again after the next backup, as this can be a passing read error. "
+                       f'<a href="{DETAILS}">Details</a>')
         else:
             problem = ""
         self._error.set_visible(bool(problem))

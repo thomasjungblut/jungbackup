@@ -36,10 +36,16 @@ class StatTile(Gtk.Box):
         self.append(self._value)
         self.append(self._sub)
 
-    def set(self, value, sub=""):
+    def set(self, value, sub="", state=None):
+        """`state` "error" or "warning" colors the whole tile, for something that needs attention."""
         self._value.set_label(value)
         self._sub.set_label(sub)
         self.set_tooltip_text(f"{value}\n{sub}" if sub else value)
+        for c in ("error", "warning"):
+            if c == state:
+                self.add_css_class(c)
+            else:
+                self.remove_css_class(c)
 
 
 class Metric(Gtk.Box):
